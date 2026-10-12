@@ -45,6 +45,8 @@ test('automatic queue uses four safely claimed workers and never deletes local m
   assert.match(queue, /MAX\(done\.verified_at\)[\s\S]*?NULLS FIRST[\s\S]*?sf\.created_at ASC[\s\S]*?LIMIT 1/);
   assert.match(queue, /mbi\.attempt_count<5/);
   assert.match(queue, /keySource: 'server_vault'/);
-  assert.match(queue, /sf\.moderation_status='approved'/);
+  assert.match(queue, /\$\{ARCHIVABLE_SQL\}/);
+  assert.match(require('../server/media-storage-policy').ARCHIVABLE_SQL,
+    /sf\.moderation_status='approved'/);
   assert.doesNotMatch(queue, /fs\.(unlink|rm)\(/);
 });

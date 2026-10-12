@@ -313,3 +313,45 @@ test('malformed timeline and display inputs fail before database access',async()
  await assert.rejects(recordFilterEvent({}, {kind:'bad kind'}),/Invalid/);
  await assert.rejects(recordFilterEvent({}, {kind:'decision_blocked',details:{value:'a'.repeat(33000)}}),/limit/);
 });
+
+test('caption persistence snapshots file and inline classifications separately without provider diagnostics',dbOptions,async t=>{
+ const f=await fixture(t),image=await f.image();
+ const inline={inlineEmoji:true,category:'women',detectedCategories:['women'],uncertain:false,
+  artworkVersion:'fixture-art',moderationVersion:'fixture-scan',artworkHash:'fixture-hash',rawOutput:'private-provider-output'};
+ const id=randomUUID();
+ await f.pool.query(`INSERT INTO messages(id,sender_id,recipient_id,type,file_url,delivery_summary)
+  VALUES($1,$2,$3,'image',$4,$5)`,[id,f.sender,f.receiver,image.url,{inlineEmojiClassification:inline}]);
+ let event=(await f.events('delivery_persisted')).find(row=>row.message_id===id);
+ assert.equal(event.file_id,image.fileId);
+ assert.equal(event.details.classification.category,'men');
+ assert.equal(event.details.inlineEmojiClassification.category,'women');
+ assert.equal(event.details.inlineEmojiClassification.inlineEmoji,true);
+ assert.equal(event.details.inlineEmojiClassification.artworkVersion,'fixture-art');
+ assert.equal(event.details.inlineEmojiClassification.artworkHash,'fixture-hash');
+ assert.equal(event.details.inlineEmojiClassification.rawOutput,undefined);
+ await f.pool.query('UPDATE messages SET delivery_summary=$1 WHERE id=$2',
+  [{inlineEmojiClassification:{...inline,category:'children'}},id]);
+ event=(await f.events('delivery_persisted')).find(row=>row.message_id===id);
+ assert.equal(event.details.inlineEmojiClassification.category,'women');
+ const textId=randomUUID();
+ await f.pool.query(`INSERT INTO messages(id,sender_id,recipient_id,type,delivery_summary)
+  VALUES($1,$2,$3,'text',$4)`,[textId,f.sender,f.receiver,{inlineEmojiClassification:inline}]);
+ const text=(await f.events('delivery_persisted')).find(row=>row.message_id===textId);
+ assert.equal(text.file_id,null);
+ assert.equal(text.details.classification,null);
+ assert.equal(text.details.inlineEmojiClassification.category,'women');
+});
+
+test('caption decisions audit audio and sticker inline scans using a sanitized classification',dbOptions,async t=>{
+ const f=await fixture(t);
+ for(const messageType of ['audio','sticker']){
+  const row=await recordFilterDecision(f.pool,{userId:f.receiver,actorId:f.sender,messageType,
+   policy:{...ALL,women:false},classification:{inlineEmoji:true,category:'women',
+    detectedCategories:['women'],artworkHash:'fixture-artwork-hash',rawOutput:'private-diagnostics'}});
+  assert.equal(row.kind,'decision_blocked');
+  assert.equal(row.details.classification.inlineEmoji,true);
+  assert.equal(row.details.classification.artworkHash,'fixture-artwork-hash');
+  assert.equal(row.details.classification.rawOutput,undefined);
+  assert.equal(row.details.messageType,messageType);
+ }
+});

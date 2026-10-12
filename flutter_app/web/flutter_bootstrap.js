@@ -12,4 +12,6 @@ for (const build of _flutter.buildConfig.builds) {
 
 // Keep the default overlay pool: camera previews can appear over several
 // video players, even though the app has only one Flutter view.
-_flutter.loader.load();
+_flutter.loader.load().catch((error) => {
+  window.betshuvaReportAppLoadFailure?.(error);
+});

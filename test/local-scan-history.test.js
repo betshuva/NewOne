@@ -74,6 +74,8 @@ test('animated image frames retain source tracking for their individual previews
   const seen = [], reviewStates = [];
   const scan = load('scanImage', 'async function scanDocument', {
     createImageReviewState: require('../server/modesty-uncertainty-review').createImageReviewState,
+    imageAnimationPolicy: require('../server/image-animation-policy'),
+    imageClassificationOutcome: require('../server/image-classification-outcome').imageClassificationOutcome,
     isTrustedBuiltinExpression: async () => false,
     isPotentiallyAnimatedImage: () => true,
     sharp: (_bytes, args) => args.pages ? {
@@ -84,12 +86,14 @@ test('animated image frames retain source tracking for their individual previews
       assert.equal(context.tracking, options.tracking);
       reviewStates.push(context.reviewState);
       assert.equal(context.tracking.scanPreviewId, undefined);
-      return { blocked: false };
+      return { blocked: false, classification: { category: 'nonHumanImages',
+        detectedCategories: ['nonHumanImages'], uncertain: false } };
     },
   });
   const result = await scan(Buffer.from('animated image'), options);
   assert.equal(result.blocked, false);
   assert.equal(result.framesScanned, 2);
+  assert.equal(result.pending, undefined);
   assert.deepEqual(seen, frames);
   assert.equal(new Set(reviewStates).size, 1, 'all frames share one review limit');
   assert.equal(options.reviewState, undefined, 'caller options remain unchanged');

@@ -304,11 +304,12 @@ void main() {
       await tester.tap(find.text('פתיחת מודעה'));
       await _until(tester, () => server.uploads.length == 2);
       await tester.pump(const Duration(seconds: 1));
-      await _until(tester, () => _field('כותרת המודעה *').evaluate().isNotEmpty);
+      await _until(
+          tester, () => _field('כותרת המודעה *').evaluate().isNotEmpty);
       await tester.enterText(_field('כותרת המודעה *'), 'רכב למכירה');
       await tester.enterText(
           _field('תיאור מפורט *'), 'תמונות ששותפו מהגלריה ונשמרות ברקע');
-      await _tapVisible(tester, find.text('פרסם'));
+      await _tapVisible(tester, find.text('פרסם מודעה'));
       await _until(tester, () => server.listingWrites.length == 1);
       await _until(
           tester, () => find.byType(PostListingScreen).evaluate().isEmpty);
@@ -378,7 +379,8 @@ void main() {
         expect(picker.videoSelections, 1);
         expect(server.imageWrites, isEmpty);
 
-        await _tapVisible(tester, find.text(editing ? 'שמור שינויים' : 'פרסם'));
+        await _tapVisible(
+            tester, find.text(editing ? 'שמור שינויים' : 'פרסם מודעה'));
         await _until(tester, () => server.listingWrites.length == 1);
         await _until(tester, () => !originalState.mounted);
         final saved = jsonDecode(server.listingWrites.single.body) as Map;
@@ -597,7 +599,7 @@ void main() {
           }
 
           await _tapVisible(
-              tester, find.text(editing ? 'שמור שינויים' : 'פרסם'));
+              tester, find.text(editing ? 'שמור שינויים' : 'פרסם מודעה'));
           await _until(tester, () => server.listingWrites.length == 1);
           await _until(tester, () => !originalState.mounted);
           expect(find.text('פתיחת מודעה'), findsOneWidget);
@@ -686,7 +688,7 @@ void main() {
           .removeCurrentSnackBar();
       await tester.pump();
 
-      await _tapVisible(tester, find.text('פרסם'));
+      await _tapVisible(tester, find.text('פרסם מודעה'));
       await _until(tester, () => server.listingWrites.length == 1);
       await _until(tester, () => !originalState.mounted);
       expect(server.imageWrites, isEmpty);
@@ -728,7 +730,7 @@ void main() {
           _field('תיאור מפורט *'), 'תיאור מלא שיישמר עם המודעה החדשה');
       await _tapVisible(tester, find.text('בחירת תמונות'));
       await _until(tester, () => server.uploads.length == 1);
-      await _tapVisible(tester, find.text('פרסם'));
+      await _tapVisible(tester, find.text('פרסם מודעה'));
       await _until(tester, () => !originalState.mounted);
       expect(server.imageWrites, isEmpty);
       server.completeUploads();

@@ -246,10 +246,7 @@ void main() {
       'identity and waits for filters, details and consents', (tester) async {
     final server = _Server();
     await _withFixture(tester, server, (google) async {
-      await tester.enterText(find.widgetWithText(TextField, 'כתובת אימייל'),
-          'old-login@example.invalid');
-      await tester.enterText(
-          find.widgetWithText(TextField, 'סיסמה'), 'old-login-password');
+      expect(find.byType(TextField), findsNothing);
       await _choose(tester, google);
       expect(find.text('בחירת סינון'), findsOneWidget);
       expect(find.text('שלב 2 מתוך 4'), findsOneWidget);
@@ -293,15 +290,12 @@ void main() {
           (await SharedPreferences.getInstance()).getString('token'), isNull);
       _expectNoSessionOrProtectedScreens();
       await _tap(tester, find.widgetWithText(TextButton, 'כניסה'));
-      expect(
-          tester
-              .widget<TextField>(find.widgetWithText(TextField, 'כתובת אימייל'))
-              .controller!
-              .text,
-          'selected@example.invalid');
+      expect(find.byKey(const ValueKey('google-login-card')), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
+      expect(find.text('selected@example.invalid'), findsNothing);
       expect(google.choiceCount, 1);
       expect(server.auth, hasLength(2));
-    });
+    }, home: const AuthScreen(initialEmail: 'old-login@example.invalid'));
   });
 
   for (final error in [
@@ -724,12 +718,9 @@ void main() {
       await _acceptConsents(tester);
       expect(server.auth, hasLength(1));
       await _tap(tester, find.widgetWithText(TextButton, 'כניסה'));
-      expect(
-          tester
-              .widget<TextField>(find.widgetWithText(TextField, 'כתובת אימייל'))
-              .controller!
-              .text,
-          'selected@example.invalid');
+      expect(find.byKey(const ValueKey('google-login-card')), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
+      expect(find.text('selected@example.invalid'), findsNothing);
       google.idToken = 'another-google-token';
       google.email = 'another@example.invalid';
       server.finishStatus = 400;
@@ -846,10 +837,16 @@ void main() {
       }
       expect(server.auth, hasLength(1));
       expect(server.verify, isEmpty);
+      expect(
+          tester
+              .widget<TextButton>(find.widgetWithText(TextButton, 'הרשמה'))
+              .onPressed,
+          isNull);
       await tester.tap(find.text('הרשמה'));
       await tester.pump(const Duration(milliseconds: 100));
-      await tester.tap(find.text('כניסה'));
-      await tester.pump(const Duration(milliseconds: 100));
+      // Login is now a single Google card rather than a pair of auth tabs.
+      expect(find.byKey(const ValueKey('google-login-card')), findsOneWidget);
+      expect(find.text('כניסה'), findsNothing);
       expect(find.text('כניסה לחשבון'), findsOneWidget);
       expect(find.text('הרשמה שלב אחר שלב'), findsNothing);
       expect(google.choiceCount, 1);

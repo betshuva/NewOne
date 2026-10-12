@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:betshuva/listing_background_images.dart';
 import 'package:betshuva/main.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -97,6 +98,10 @@ class _VideoProbe extends video.VideoPlayerPlatform {
   Future<void> setPlaybackSpeed(int id, double speed) async {}
   @override
   Future<void> pause(int id) async {}
+  @override
+  Future<void> play(int id) async {}
+  @override
+  Future<Duration> getPosition(int id) async => Duration.zero;
   @override
   Widget buildView(int id) => const SizedBox.shrink();
 }
@@ -216,6 +221,12 @@ void main() {
         await _finish(tester, job);
         await tester.pumpAndSettle();
         expect(_videoUrls(tester), [_backgroundVideo]);
+        expect(probe.sources, isEmpty,
+            reason: 'Showing a preview must not start video playback');
+        await tester.ensureVisible(find.byTooltip('הפעל וידאו'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('הפעל וידאו'));
+        await tester.pumpAndSettle();
         expect(probe.sources, [_backgroundVideo]);
         expect(_galleryUrls(tester), [_cover]);
         _expectMetadata();
@@ -231,6 +242,13 @@ void main() {
         await tester.pumpWidget(_detail(token, item: refreshed));
         await tester.pumpAndSettle();
         expect(_videoUrls(tester), freshVideo == null ? isEmpty : [freshVideo]);
+        expect(probe.sources, [_backgroundVideo]);
+        if (freshVideo != null) {
+          await tester.ensureVisible(find.byTooltip('הפעל וידאו'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.byTooltip('הפעל וידאו'));
+          await tester.pumpAndSettle();
+        }
         expect(_galleryUrls(tester), [_cover]);
         _expectMetadata();
         expect(listingBackgroundImages.forToken(token), contains(job));
@@ -253,6 +271,11 @@ void main() {
                 : [_backgroundVideo, freshVideo]);
         expect(_galleryUrls(tester), [_cover]);
         _expectMetadata();
+        if (kIsWeb) {
+          // Synthetic video URLs complete through the thumbnail timeout.
+          await tester.pump(const Duration(seconds: 13));
+          await tester.pumpAndSettle();
+        }
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);

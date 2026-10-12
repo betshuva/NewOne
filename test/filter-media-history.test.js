@@ -270,6 +270,7 @@ test('actual general PUT returns 409 without writing and preserves boolean respo
  const end=source.indexOf("\napp.get('/api/contacts/:userId/filter-settings'",start);
  let handler;
  const context={...policy,...history,app:{put:(_path,...handlers)=>handler=handlers.at(-1)},
+   requireFilterPin:async()=>{},
    authWithDbCheck:()=>{},getPool:async()=>f.pool,relay:()=>{},deleteOwnMedia:async()=>({}),console};
  vm.runInNewContext(source.slice(start,end),context);
  const call=async(body)=>{const res={statusCode:200,status(n){this.statusCode=n;return this;},json(data){this.data=data;return this;}};
@@ -326,6 +327,7 @@ test('actual group-wide save asks only the acting member and records settings pl
  const end=source.indexOf("app.put('/api/groups/:id/personal-filter',",start);
  let handler;
  const context={...policy,...history,app:{put:(_path,...handlers)=>handler=handlers.at(-1)},
+   requireFilterPin:async()=>{},
    auth:()=>{},getPool:async()=>f.pool,relay:()=>{},deleteOwnMedia:async()=>({}),console,
    getGroupContentFilter:async(db,groupId)=>{
      const r=(await db.query('SELECT u.content_filter AS general,g.content_filter FROM groups g JOIN users u ON u.id=g.creator_id WHERE g.id=$1',[groupId])).rows[0];

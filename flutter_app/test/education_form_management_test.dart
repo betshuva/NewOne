@@ -224,7 +224,8 @@ void main() {
           'מתי יוצאים?');
       await tester.tap(find.textContaining('נמענים: כל חברי הקבוצה'));
       await tester.pumpAndSettle();
-      expect(find.text('מנהל'), findsNothing);
+      expect(find.text('מנהל (אני)'), findsOneWidget);
+      expect(find.text('בחר (3)'), findsOneWidget);
       await tester.tap(find.text('נקה'));
       await tester.pumpAndSettle();
       await tester.enterText(_field('חיפוש חברי קבוצה'), 'שרה');
@@ -283,6 +284,73 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     }, () => client);
   });
+  testWidgets('member form list distinguishes owned forms from recipient forms',
+      (tester) async {
+    final owned = <String, dynamic>{
+      ..._form,
+      'created_by': 'current-member',
+      'canManage': true,
+      'isCreator': true,
+      'isAdmin': false,
+      'my_role': 'member',
+      'canSend': true,
+      'response_count': 2,
+      'expected_count': 3,
+    };
+    final other = <String, dynamic>{
+      ...owned,
+      'id': 'other-form',
+      'title': 'סקר של חבר אחר',
+      'created_by': 'another-member',
+      'canManage': false,
+      'isCreator': false,
+    };
+    final client = MockClient((request) async {
+      if (request.url.path.endsWith('/education-forms')) {
+        return _json({
+          'forms': [owned, other],
+          'isAdmin': false,
+          'canCreate': true,
+        });
+      }
+      return _json({
+        'form': request.url.path.endsWith('/other-form') ? other : owned,
+        'participants': [],
+        'results': [],
+      });
+    });
+    await http.runWithClient(() async {
+      await tester.pumpWidget(const MaterialApp(
+          home: EducationFormsScreen(
+              token: 'token',
+              groupId: 'group-one',
+              groupName: 'קבוצה',
+              isAdmin: false)));
+      await tester.pumpAndSettle();
+      expect(find.text('יצירה חדשה'), findsOneWidget);
+      expect(find.text('2 מתוך 3 השלימו'), findsOneWidget);
+      expect(find.text('ממתין לתשובתך'), findsOneWidget);
+      await tester.tap(find.text('סקר של חבר אחר'));
+      await tester.pumpAndSettle();
+      expect(find.byType(PopupMenuButton<String>), findsNothing);
+      Navigator.of(tester.element(find.byType(EducationFormDetailsScreen)))
+          .pop();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('סקר טיול'));
+      await tester.pumpAndSettle();
+      expect(
+          tester
+              .widget<EducationFormDetailsScreen>(
+                  find.byType(EducationFormDetailsScreen))
+              .isAdmin,
+          isFalse);
+      expect(find.byType(PopupMenuButton<String>), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    }, () => client);
+  });
+
   testWidgets(
       'published form sends only to selected newly added members and opens archived responses',
       (tester) async {
@@ -314,7 +382,7 @@ void main() {
       return _json({
         'form': {
           ..._form,
-          'new_member_count': 1,
+          'new_member_count': 2,
           'revisions': [
             {
               'id': 'old-revision',
@@ -346,12 +414,13 @@ void main() {
       final choices = find.descendant(
           of: find.byType(AlertDialog),
           matching: find.byType(CheckboxListTile));
-      expect(choices, findsOneWidget);
+      expect(choices, findsNWidgets(2));
+      expect(find.text('מנהל (אני)'), findsOneWidget);
       expect(
           find.descendant(
               of: find.byType(AlertDialog), matching: find.text('חבר קיים')),
           findsNothing);
-      await tester.tap(choices);
+      await tester.tap(find.text('חבר חדש'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('בחר (1)'));
       await tester.pumpAndSettle();
@@ -379,6 +448,85 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('תשובה אנונימית'), findsOneWidget);
       expect(find.text('הושלם • בוקר'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    }, () => client);
+  });
+
+  testWidgets(
+      'recipient picker includes sender by default and allows opting out',
+      (tester) async {
+    List<String>? selected;
+    final client = MockClient((req) async => _json({
+          'viewer_id': 'admin',
+          'members': [
+            {'id': 'admin', 'name': 'מנהל'},
+            {'id': 'one', 'name': 'חבר'},
+          ],
+        }));
+    await http.runWithClient(() async {
+      await tester.pumpWidget(MaterialApp(
+          home: Builder(
+              builder: (ctx) => Scaffold(
+                  body: TextButton(
+                      onPressed: () async => selected =
+                          await showEducationRecipientsDialog(ctx,
+                              api: kApi, token: 'token', groupId: 'group-one'),
+                      child: const Text('נמענים'))))));
+      await tester.tap(find.text('נמענים'));
+      await tester.pumpAndSettle();
+      final ownChoice = find.ancestor(
+          of: find.text('מנהל (אני)'), matching: find.byType(CheckboxListTile));
+      expect(tester.widget<CheckboxListTile>(ownChoice).value, isTrue);
+      expect(find.text('בחר (2)'), findsOneWidget);
+      await tester.tap(ownChoice);
+      await tester.pumpAndSettle();
+      expect(tester.widget<CheckboxListTile>(ownChoice).value, isFalse);
+      await tester.tap(find.text('בחר (1)'));
+      await tester.pumpAndSettle();
+      expect(selected, ['one']);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    }, () => client);
+  });
+
+  testWidgets('assigning new members excludes existing sender recipient',
+      (tester) async {
+    List<String>? selected;
+    final client = MockClient((req) async => _json({
+          'viewer_id': 'admin',
+          'members': [
+            {'id': 'admin', 'name': 'מנהל'},
+            {'id': 'old', 'name': 'חבר קיים'},
+            {'id': 'new', 'name': 'חבר חדש'},
+          ],
+        }));
+    await http.runWithClient(() async {
+      await tester.pumpWidget(MaterialApp(
+          home: Builder(
+              builder: (ctx) => Scaffold(
+                  body: TextButton(
+                      onPressed: () async => selected =
+                          await showEducationRecipientsDialog(ctx,
+                              api: kApi,
+                              token: 'token',
+                              groupId: 'group-one',
+                              initialIds: const [],
+                              excludeIds: {'admin', 'old'}),
+                      child: const Text('נמענים'))))));
+      await tester.tap(find.text('נמענים'));
+      await tester.pumpAndSettle();
+      expect(find.text('מנהל (אני)'), findsNothing);
+      expect(find.text('חבר קיים'), findsNothing);
+      expect(find.byType(CheckboxListTile), findsOneWidget);
+      expect(
+          tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
+          isFalse);
+      await tester.tap(find.text('בחר הכול'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('בחר (1)'));
+      await tester.pumpAndSettle();
+      expect(selected, ['new']);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     }, () => client);

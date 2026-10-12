@@ -111,5 +111,5 @@ test('anonymous revision history never exposes identity, signature or response t
   await history({params:{id:'form',revisionId:'revision'},user:{id:'admin'}},res);
   assert.deepEqual(res.body.responses,[{response_status:'completed',answers:{0:'בוקר'}}]);
   assert.equal(queries.length,1);
-  assert(queries[0].includes("gm.role='admin' AND gm.status='member'"));
+  assert(queries[0].includes("(gm.role='admin' OR f.created_by=$3) AND gm.status='member'"));
 });

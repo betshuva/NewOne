@@ -1,8 +1,9 @@
 'use strict';
 
 const { resolveScopedContentFilter, contentAllowedByFilter,
-  isUnfilteredAssistantConversation } = require('./content-filter-policy');
+  isUnfilteredAssistantConversation, combineMessageClassifications } = require('./content-filter-policy');
 const { personalMessageVisible } = require('./conversation-history');
+const { extractKeyboardEmoji } = require('./unicode-emoji-artwork');
 const { recordFilterEvent } = require('./filter-audit');
 const { getEffectiveSenderFilter } = require('./sender-content-filter');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -44,8 +45,9 @@ async function lockFilterOwner(db, userId) {
 async function prepareFilterHistoryChange(db, userId, scope, nextFilter, action) {
   if (action !== undefined && !['keep', 'hide', 'delete'].includes(action))
     throw error(400, 'INVALID_EXISTING_MEDIA_ACTION', 'בחירה לא תקינה עבור התמונות הקיימות');
-  const rows = await db.query(`SELECT m.id,m.group_id,m.sender_id,m.recipient_id,
+  const rows = await db.query(`SELECT m.id,m.group_id,m.sender_id,m.recipient_id,m.type,m.file_url,
       COALESCE(sf.moderation_details->'classification',owned_copy.moderation_details->'classification') AS classification,
+      to_jsonb(m)->'delivery_summary'->'inlineEmojiClassification' AS inline_emoji_classification,
       u.content_filter AS general_filter,c.filter_override AS contact_filter,
       gm.filter_override AS member_filter,g.content_filter AS group_filter,
       g.creator_id,creator.content_filter AS creator_filter,
@@ -67,6 +69,8 @@ async function prepareFilterHistoryChange(db, userId, scope, nextFilter, action)
         OR ($2 IN ('group','group_personal') AND m.group_id=$3::uuid))`,
   [userId, scope.kind, scope.id || null]);
   const affected = rows.rows.filter(row => {
+    const classification = combineMessageClassifications(row.classification, row.inline_emoji_classification,
+      row.file_url ? row.type : null);
     const outgoingPrivate = !row.group_id && row.sender_id === userId &&
       row.recipient_id && row.recipient_id !== userId;
     // Contact settings describe what this user receives from that contact.
@@ -87,8 +91,8 @@ async function prepareFilterHistoryChange(db, userId, scope, nextFilter, action)
     // Older releases never offered a choice for the user's own images. A
     // unchanged save can resolve these blocked, undecided IDs once. Explicit
     // actions may also replace an earlier choice without toggling settings.
-    const blocked = !contentAllowedByFilter(after, 'image', row.classification);
-    return imageAffectedByTightening(before, after, row.classification) ||
+    const blocked = !contentAllowedByFilter(after, 'image', classification);
+    return imageAffectedByTightening(before, after, classification) ||
       (blocked && (!row.previous_action || (action !== undefined && row.previous_action !== action)));
   });
   if (affected.length && action === undefined)
@@ -137,10 +141,11 @@ async function finishFilterHistoryChange(pool, userId, change, deleteOwnMedia) {
 async function projectFilteredHistory(db, userId, messages, { groupId = null, preserveClearedCopies = false } = {}) {
   const ids = messages.filter(row => UUID.test(String(row.id))).map(row => row.id);
   if (!ids.length) return messages;
-  const state = await db.query(`SELECT m.id,m.sender_id,m.recipient_id,m.group_id,m.type,
+  const state = await db.query(`SELECT m.id,m.sender_id,m.recipient_id,m.group_id,m.type,m.file_url,
       a.action,EXISTS(SELECT 1 FROM message_user_deletions d
         WHERE d.user_id=$1 AND d.message_id=m.id) AS deleted,
       COALESCE(sf.moderation_details->'classification',owned_copy.moderation_details->'classification') AS classification,
+      to_jsonb(m)->'delivery_summary'->'inlineEmojiClassification' AS inline_emoji_classification,
       CASE WHEN sf.moderation_status IN ('pending','rejected','stopped') THEN sf.moderation_status
         ELSE COALESCE(owned_copy.moderation_status,sf.moderation_status) END AS moderation_status,
       CASE WHEN sf.moderation_status IN ('pending','rejected','stopped') THEN sf.moderation_details->>'reason'
@@ -150,6 +155,7 @@ async function projectFilteredHistory(db, userId, messages, { groupId = null, pr
         WHERE e.message_id=m.id AND e.user_id=$1
           AND e.kind IN ('delivery_persisted','delivery_blocked_persisted')
         ORDER BY e.id DESC LIMIT 1) AS delivery_group_filter,
+      betshuva_effective_filter(creator.content_filter,g.content_filter) AS current_group_filter,
       betshuva_effective_filter(u.content_filter,
         CASE WHEN m.group_id IS NULL THEN
           CASE WHEN m.sender_id=$1 AND m.recipient_id<>$1 THEN NULL ELSE c.filter_override END
@@ -158,15 +164,18 @@ async function projectFilteredHistory(db, userId, messages, { groupId = null, pr
     LEFT JOIN user_contacts c ON c.owner_id=$1 AND c.contact_id=CASE WHEN m.sender_id=$1 THEN m.recipient_id ELSE m.sender_id END
     LEFT JOIN group_members gm ON gm.group_id=m.group_id AND gm.user_id=$1
     LEFT JOIN groups g ON g.id=m.group_id
+    LEFT JOIN users creator ON creator.id=g.creator_id
     LEFT JOIN stored_files sf ON sf.public_url=m.file_url
     LEFT JOIN received_message_media received ON received.message_id=m.id AND received.user_id=$1 AND received.status='ready'
     LEFT JOIN stored_files owned_copy ON owned_copy.id=received.stored_file_id AND owned_copy.user_id=$1
     LEFT JOIN user_message_filter_actions a ON a.user_id=$1 AND a.message_id=m.id
     WHERE m.id=ANY($2::uuid[])`, [userId, ids]);
   const byId = new Map(state.rows.map(row => [row.id, row]));
-  return messages.flatMap(message => {
+  const projected = messages.flatMap(message => {
     const row = byId.get(message.id);
     if (!row) return [message];
+    const classification = combineMessageClassifications(row.classification, row.inline_emoji_classification,
+      row.file_url ? row.type : null);
     if ((!preserveClearedCopies && row.deleted) || row.action === 'delete') return [];
     if (row.moderation_status === 'stopped') return [{
       ...message, file_url: null, fileUrl: null, public_url: null,
@@ -178,18 +187,36 @@ async function projectFilteredHistory(db, userId, messages, { groupId = null, pr
       content_purged_at: row.content_purged_at || null,
       filter_hidden: true, hidden_reason: 'moderation', filter_kept: false,
     }];
+    if (row.type !== 'image' && classification?.inlineEmoji === true) {
+      const outgoingPrivate = !row.group_id && row.sender_id === userId &&
+        row.recipient_id && row.recipient_id !== userId;
+      const unfilteredAssistant = !row.group_id &&
+        isUnfilteredAssistantConversation(row.sender_id, row.recipient_id);
+      const allowed = (outgoingPrivate || unfilteredAssistant ||
+        contentAllowedByFilter(row.filter, row.type, classification)) &&
+        (!row.group_id || contentAllowedByFilter(row.current_group_filter, row.type, classification));
+      if (!allowed) return [{ ...message, body: null, text: null,
+        file_url: null, fileUrl: null, public_url: null,
+        blocked_preview_url: null, thumbnail_url: null, preview_url: null,
+        file_name: null, fileName: null, filter_hidden: true,
+        hidden_reason: 'content_filter', filter_kept: false }];
+      if (row.type === 'text') return [{ ...message, filter_hidden: false, filter_kept: false }];
+    }
     if (row.type !== 'image') {
       if (row.sender_id === userId) return [message];
-      return groupId && !contentAllowedByFilter(row.filter, row.type, row.classification) ? [] : [message];
+      return groupId && !contentAllowedByFilter(row.filter, row.type, classification) ? [] : [message];
     }
     const safe = row.moderation_status === 'approved' && !row.content_purged_at;
     const unfilteredAssistant = !row.group_id &&
       isUnfilteredAssistantConversation(row.sender_id, row.recipient_id);
     const preferenceHidden = row.action === 'hide' ||
-      (row.action !== 'keep' && (!contentAllowedByFilter(row.filter, 'image', row.classification) ||
-        (row.delivery_group_filter && !contentAllowedByFilter(row.delivery_group_filter, 'image', row.classification))));
-    const hidden = !safe || (!unfilteredAssistant && preferenceHidden);
+      (row.action !== 'keep' && (!contentAllowedByFilter(row.filter, 'image', classification) ||
+        (row.delivery_group_filter && !contentAllowedByFilter(row.delivery_group_filter, 'image', classification))));
+    const groupCaptionHidden = row.group_id && row.inline_emoji_classification?.inlineEmoji === true &&
+      !contentAllowedByFilter(row.current_group_filter, 'text', row.inline_emoji_classification);
+    const hidden = !safe || groupCaptionHidden || (!unfilteredAssistant && preferenceHidden);
     if (hidden) return [{ ...message, file_url: null, fileUrl: null, body: null,
+      public_url: null, blocked_preview_url: null, thumbnail_url: null, preview_url: null,
       text: null, file_name: null, fileName: null, filter_hidden: true,
       scan_file_name: row.sender_id === userId ? message.file_name || message.fileName || null : null,
       moderation_status: row.moderation_status || null,
@@ -197,6 +224,30 @@ async function projectFilteredHistory(db, userId, messages, { groupId = null, pr
       hidden_reason: safe ? 'content_filter' : 'moderation', filter_kept: false }];
     return [{ ...message, filter_hidden: false, filter_kept: row.action === 'keep' }];
   });
+  return projectUnicodeReplyBodies(db, userId, projected, { groupId });
+}
+
+// A plain reply must not reveal visual emoji from a source the reader cannot
+// open. Recheck only unfamiliar glyphs; ordinary quotes retain their behavior.
+async function projectUnicodeReplyBodies(db, userId, messages, { groupId = null } = {}) {
+  const replies = messages.filter(message => {
+    const id = message.reply_to_id || message.replyToId;
+    const body = message.reply_body || message.replyBody;
+    return UUID.test(String(id)) && body &&
+      extractKeyboardEmoji(body).some(glyph => !glyph.knownApproved);
+  });
+  if (!replies.length) return messages;
+  const ids = [...new Set(replies.map(message => message.reply_to_id || message.replyToId))];
+  const sources = await db.query(`SELECT m.id FROM messages m
+    WHERE m.id=ANY($2::uuid[]) AND ${personalMessageVisible('m', '$1')}`, [userId, ids]);
+  // The source rows contain no reply fields, so nested/cyclic replies cannot
+  // recurse. Classification comes from persisted server metadata.
+  const visible = await projectFilteredHistory(db, userId, sources.rows, { groupId });
+  const allowed = new Set(visible.filter(message => !message.filter_hidden).map(message => message.id));
+  const affected = new Set(replies);
+  return messages.map(message => !affected.has(message) ||
+    allowed.has(message.reply_to_id || message.replyToId) ? message :
+    { ...message, reply_body: null, replyBody: null });
 }
 
 

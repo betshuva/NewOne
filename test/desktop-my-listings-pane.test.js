@@ -14,7 +14,8 @@ test('desktop keeps the marketplace list beside My Listings', () => {
   const listings = source.slice(start, end);
 
   assert.match(listings, /MediaQuery\.sizeOf\(context\)\.width >= 900[\s\S]*?_showMyListings = true/);
-  assert.match(listings, /Row\(children: \[[\s\S]*?SizedBox\(width: 410, child: listPane\)/);
+  assert.match(listings,
+    /Row\(\s*(?:textDirection:[\s\S]*?,\s*)?children:\s*\[[\s\S]*?SizedBox\(width: 410, child: listPane\)/);
   assert.match(listings, /_showMyListings[\s\S]*?MyListingsScreen\([\s\S]*?embedded: true/);
 });
 

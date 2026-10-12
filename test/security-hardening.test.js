@@ -18,6 +18,7 @@ test('public HTTP files use an allowlist, including encoded paths and active upl
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const name of ['index.html', 'firebase-service-account.json', 'server.log',
     'deploy-web-local.sh', 'package.json', 'main.dart.js', 'version.json',
+    'home.css', 'home.js', 'entry-route.js', 'home.js.map', 'entry-route.js.map', '.env',
     'betshuva-1.3.37.apk', 'server/index.js', 'backups/secret.json', 'qa-tests.html',
     'assets/qa-tests/catalog.json', 'assets/font.ttf', 'uploads/example.html', 'uploads/audio.mp3', 'uploads/.guide-files/private.pdf']) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
@@ -49,6 +50,22 @@ test('public HTTP files use an allowlist, including encoded paths and active upl
   assert.equal(html.headers['content-disposition'], 'attachment');
   assert.match(html.headers['content-security-policy'], /sandbox/);
   assert.equal(publishedPath('/assets/%ZZ'), false);
+
+  await t.test('homepage CSS and scripts are public while source maps and secrets stay private', async () => {
+    for (const target of ['/home.css', '/home.js', '/entry-route.js']) {
+      const response = await request(target);
+      assert.equal(response.statusCode, 200, target);
+      assert.equal(response.headers['x-frame-options'], 'SAMEORIGIN');
+      assert.match(response.headers['content-type'], target.endsWith('.css')
+        ? /^text\/css(?:;|$)/
+        : /^(?:application|text)\/javascript(?:;|$)/, target);
+    }
+    for (const target of ['/home.js.map', '/entry-route.js.map', '/.env',
+      '/server/index.js', '/firebase-service-account.json', '/backups/secret.json']) {
+      assert.equal((await request(target)).statusCode, 404, target);
+      assert.equal(publishedPath(target), false, target);
+    }
+  });
 });
 
 test('trusted proxy replaces spoofed forwarded headers and ignores external X-Real-IP', () => {

@@ -1,4 +1,5 @@
 import 'education_form_tools.dart';
+import 'education_form_message_card.dart';
 import 'simple_survey_editor.dart';
 import 'survey_answers.dart';
 import 'filter_pin_gate.dart';
@@ -12,9 +13,12 @@ import 'web_chat_attachments.dart';
 import 'chat_upload_batch.dart';
 import 'chat_message_text.dart';
 import 'listing_background_images.dart';
+import 'listing_search_filters.dart';
 import 'chat_listing_image.dart';
 import 'listing_capture.dart';
 import 'listing_video_draft.dart';
+import 'listing_form_draft.dart';
+import 'listing_editor_layout.dart';
 import 'main_navigation_tab.dart';
 import 'chat_upload_notices.dart';
 import 'drive_storage_summary.dart';
@@ -46,10 +50,14 @@ import 'system_audit_screen.dart';
 import 'guide_message_draft.dart';
 import 'inline_custom_emoji.dart';
 import 'keyboard_click_sound.dart';
+import 'keyboard_inserted_image.dart';
 import 'shared_composer_send.dart';
 import 'guide_file.dart';
 import 'guide_table_text.dart';
 import 'safe_information_text.dart';
+import 'ai_answer_presentation.dart';
+import 'welcome_entry_policy.dart';
+import 'welcome_screen.dart';
 import 'phone_sharing.dart';
 import 'phone_sharing_privacy.dart';
 import 'dart:async';
@@ -123,6 +131,7 @@ import 'native_photo_capture.dart';
 import 'capture_file_name.dart';
 import 'captured_photo_name.dart';
 import 'image_paste_menu.dart';
+import 'chat_formatting_toolbar.dart';
 import 'group_invite_intent.dart';
 import 'group_invite_join.dart';
 import 'group_invite_share.dart';
@@ -2070,7 +2079,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.69';
+const kVersion = '1.3.70';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -3862,61 +3871,6 @@ Future<void> main() async {
   runApp(const BetshuvApp());
 }
 
-class _IsraelFlagPainter extends CustomPainter {
-  const _IsraelFlagPainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final border = Paint()
-      ..color = const Color(0xFFD5E2EC)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1;
-    final blue = Paint()
-      ..color = const Color(0xFF1B6CA8)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.6;
-
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(2)),
-      Paint()..color = Colors.white,
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(2)),
-      border,
-    );
-    canvas.drawLine(Offset(1, size.height * .25),
-        Offset(size.width - 1, size.height * .25), blue);
-    canvas.drawLine(Offset(1, size.height * .75),
-        Offset(size.width - 1, size.height * .75), blue);
-
-    Path triangle(double startAngle) {
-      final path = Path();
-      final center = Offset(size.width / 2, size.height / 2);
-      final radius = size.height * .28;
-      for (var i = 0; i < 3; i++) {
-        final angle = startAngle + (i * 2 * math.pi / 3);
-        final point =
-            center + Offset(math.cos(angle), math.sin(angle)) * radius;
-        i == 0
-            ? path.moveTo(point.dx, point.dy)
-            : path.lineTo(point.dx, point.dy);
-      }
-      return path..close();
-    }
-
-    canvas.drawPath(triangle(-math.pi / 2), blue);
-    canvas.drawPath(triangle(math.pi / 2), blue);
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-Widget _israelFlag() => const SizedBox(
-      width: 30,
-      height: 20,
-      child: CustomPaint(painter: _IsraelFlagPainter()),
-    );
 
 Widget _magenDavid(
         {double size = 32, Color color = kPrimary, Color bg = Colors.white}) =>
@@ -4048,7 +4002,8 @@ class BetshuvApp extends StatelessWidget {
 
 // ── Splash Screen ─────────────────────────────────────────────────
 class SplashScreen extends StatefulWidget {
-  const SplashScreen({super.key});
+  const SplashScreen({super.key, this.initialUri});
+  final Uri? initialUri;
   @override
   State<SplashScreen> createState() => _SplashScreenState();
 }
@@ -4057,6 +4012,8 @@ class _SplashScreenState extends State<SplashScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
   late Animation<double> _fade;
+
+  Uri get _startupUri => widget.initialUri ?? Uri.base;
 
   @override
   void initState() {
@@ -4067,7 +4024,7 @@ class _SplashScreenState extends State<SplashScreen>
     );
     _fade = CurvedAnimation(parent: _ctrl, curve: Curves.easeIn);
     _ctrl.forward();
-    const GroupInviteIntentStore().captureFromUri(Uri.base).ignore();
+    const GroupInviteIntentStore().captureFromUri(_startupUri).ignore();
     http.get(Uri.parse('$kApi/version')).ignore(); // wake up server
     Future.delayed(const Duration(seconds: 2), _navigate);
   }
@@ -4076,7 +4033,7 @@ class _SplashScreenState extends State<SplashScreen>
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString('token');
     if (!mounted) return;
-    final verifiedEmail = Uri.base.queryParameters['verifiedEmail'];
+    final verifiedEmail = _startupUri.queryParameters['verifiedEmail'];
     if (token == null && verifiedEmail?.isNotEmpty == true) {
       Navigator.pushReplacement(
         context,
@@ -4128,12 +4085,43 @@ class _SplashScreenState extends State<SplashScreen>
     }
     final activeToken = prefs.getString('token');
     if (!mounted) return;
+    var hasPendingInvite = false;
+    try {
+      hasPendingInvite = await const GroupInviteIntentStore().read() != null;
+    } catch (_) {}
+    if (!mounted) return;
+    final seenVersion = prefs.get(welcomeSeenVersionKey);
+    if (activeToken == null &&
+        shouldShowWelcomeIntro(
+          uri: _startupUri,
+          isWeb: kIsWeb,
+          hasToken: token != null,
+          seenVersion: seenVersion is int ? seenVersion : 0,
+          hasPendingInvite: hasPendingInvite,
+        )) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (welcomeContext) => WelcomeScreen(
+            onContinue: (registration) => Navigator.of(welcomeContext)
+                .pushReplacement(MaterialPageRoute(
+              builder: (_) => AuthScreen(initialRegistration: registration),
+            )),
+            onOpenUrl: (url) =>
+                _confirmAndOpenExternalLink(welcomeContext, url),
+          ),
+        ),
+      );
+      return;
+    }
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
         builder: (_) => activeToken != null
             ? MainShell(token: activeToken)
-            : const AuthScreen(),
+            : AuthScreen(
+                initialRegistration: welcomeEntryIntent(_startupUri) ==
+                    WelcomeEntryIntent.register),
       ),
     );
   }
@@ -4234,240 +4222,6 @@ class _GeneralFilterEnforcementCard extends StatelessWidget {
       );
 }
 
-class _RegistrationFilterSelector extends StatelessWidget {
-  final Map<String, bool> filter;
-  final bool confirmed;
-  final ValueChanged<Map<String, bool>> onChanged;
-  final ValueChanged<bool> onConfirmed;
-
-  const _RegistrationFilterSelector({
-    required this.filter,
-    required this.confirmed,
-    required this.onChanged,
-    required this.onConfirmed,
-  });
-
-  static const _items = <String, (String, IconData)>{
-    'men': ('גברים', Icons.man),
-    'women': ('נשים', Icons.woman),
-    'children': ('ילדים', Icons.child_care),
-    'video': ('וידאו', Icons.videocam_outlined),
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    final selectedCount =
-        _items.keys.where((key) => filter[key] == true).length;
-    final safeDefault = _items.keys.every((key) => filter[key] != true);
-    return Container(
-      margin: const EdgeInsets.only(top: 18),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-            color: confirmed ? kPrimaryMid : const Color(0xFFC8DDEA),
-            width: confirmed ? 1.8 : 1.2),
-        boxShadow: const [
-          BoxShadow(
-              color: Color(0x120D5D91), blurRadius: 16, offset: Offset(0, 4)),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(children: [
-            Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                color: kPrimary.withValues(alpha: 0.10),
-                borderRadius: BorderRadius.circular(11),
-              ),
-              child: const Icon(Icons.shield_outlined, color: kPrimary),
-            ),
-            const SizedBox(width: 10),
-            const Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('מה תרצה לקבל?',
-                      style:
-                          TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
-                  Text('אפשר לשנות זאת אחר כך בהגדרות',
-                      style: TextStyle(color: kSubtext, fontSize: 12)),
-                ],
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: const Color(0xFFE8F3FA),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text('$selectedCount נבחרו',
-                  style: const TextStyle(
-                      color: kPrimary,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700)),
-            ),
-          ]),
-          const SizedBox(height: 14),
-          InkWell(
-            borderRadius: BorderRadius.circular(12),
-            onTap: () => onChanged({
-              ..._newAccountFilter(),
-              'enforceGeneralFilter': filter['enforceGeneralFilter'] == true
-            }),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: safeDefault
-                    ? kPrimary.withValues(alpha: 0.09)
-                    : const Color(0xFFF5F8FA),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: safeDefault ? kPrimaryMid : kBorder),
-              ),
-              child: Row(children: [
-                Icon(
-                    safeDefault
-                        ? Icons.check_circle_rounded
-                        : Icons.radio_button_unchecked,
-                    color: safeDefault ? kPrimary : kSubtext,
-                    size: 22),
-                const SizedBox(width: 9),
-                const Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('טקסט ונוף — ברירת מחדל',
-                          style: TextStyle(
-                              fontSize: 13, fontWeight: FontWeight.w700)),
-                      Text('תמונות אנשים ווידאו חסומים',
-                          style: TextStyle(color: kSubtext, fontSize: 11)),
-                    ],
-                  ),
-                ),
-              ]),
-            ),
-          ),
-          const SizedBox(height: 12),
-          const Text('או התאמה אישית:',
-              style: TextStyle(color: kSubtext, fontSize: 12)),
-          const SizedBox(height: 7),
-          Wrap(
-            spacing: 7,
-            runSpacing: 7,
-            children: _items.entries.map((entry) {
-              final selected = filter[entry.key] == true;
-              return FilterChip(
-                selected: selected,
-                showCheckmark: true,
-                avatar: Icon(entry.value.$2,
-                    size: 18, color: selected ? kPrimary : kSubtext),
-                label: Text(entry.value.$1),
-                labelStyle: TextStyle(
-                    color: selected ? kPrimary : kTextDark,
-                    fontSize: 12,
-                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500),
-                selectedColor: const Color(0xFFE1F1FC),
-                backgroundColor: const Color(0xFFF5F8FA),
-                side: BorderSide(color: selected ? kPrimaryMid : kBorder),
-                onSelected: (value) => onChanged({
-                  ...filter,
-                  entry.key: value,
-                }),
-              );
-            }).toList(),
-          ),
-          const SizedBox(height: 14),
-          _GeneralFilterEnforcementCard(
-            value: filter['enforceGeneralFilter'] == true,
-            onChanged: (value) =>
-                onChanged({...filter, 'enforceGeneralFilter': value}),
-          ),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: confirmed ? null : () => onConfirmed(true),
-              icon: Icon(confirmed
-                  ? Icons.check_circle_rounded
-                  : Icons.verified_user_outlined),
-              label:
-                  Text(confirmed ? 'בחירת הסינון אושרה' : 'אישור בחירת הסינון'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: confirmed ? Colors.white : kPrimary,
-                backgroundColor: confirmed ? kPrimary : Colors.white,
-                disabledForegroundColor: Colors.white,
-                disabledBackgroundColor: kPrimary,
-                side: const BorderSide(color: kPrimary),
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RegistrationProgress extends StatelessWidget {
-  final int current;
-  const _RegistrationProgress({required this.current});
-
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 20),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _step(1, 'פרטים וסינון'),
-            Flexible(
-              child: Container(
-                height: 2,
-                margin: const EdgeInsets.symmetric(horizontal: 8),
-                color: current >= 2 ? kPrimaryMid : kBorder,
-              ),
-            ),
-            _step(2, 'אימות'),
-          ],
-        ),
-      );
-
-  Widget _step(int number, String label) {
-    final active = current >= number;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 25,
-          height: 25,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: active ? kPrimary : Colors.white,
-            shape: BoxShape.circle,
-            border: Border.all(color: active ? kPrimary : kBorder),
-          ),
-          child: Text('$number',
-              style: TextStyle(
-                  color: active ? Colors.white : kSubtext,
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold)),
-        ),
-        const SizedBox(width: 6),
-        Text(label,
-            style: TextStyle(
-                color: active ? kPrimary : kSubtext,
-                fontSize: 11,
-                fontWeight: active ? FontWeight.w700 : FontWeight.w500)),
-      ],
-    );
-  }
-}
 
 class _TermsAgreementTile extends StatelessWidget {
   final bool value;
@@ -4733,7 +4487,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                     ? null
                     : () => Navigator.pushReplacement(context,
                         MaterialPageRoute(builder: (_) => const AuthScreen())),
-                child: const Text('כניסה עם Google או אימייל וסיסמה'),
+                child: const Text('כניסה עם Google'),
               ),
             ]),
           ),
@@ -4860,7 +4614,6 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _isLogin = true;
   bool _loading = false;
   bool _choosingVerification = false;
-  bool _verificationRequired = false;
   bool _acceptedTerms = false;
   bool _ageConfirmed = false;
   bool _filterConfirmed = true;
@@ -4940,27 +4693,53 @@ class _AuthScreenState extends State<AuthScreen> {
       }
       if (idToken == null) throw Exception('לא התקבל טוקן מגוגל');
 
-      final res = await http
+      final requestBody = jsonEncode({
+        'idToken': idToken,
+        if (completingRegistration) ...{
+          'acceptedTerms': _acceptedTerms,
+          'ageConfirmed': _ageConfirmed,
+          'gender': _gender,
+          'birthDate':
+              _birthDate == null ? null : _formatBirthDate(_birthDate!),
+          'contentFilter': _registrationFilter,
+          'contentFilterConfirmed': _filterConfirmed,
+        },
+        if (kPendingInviteId != null) 'inviteId': kPendingInviteId,
+      });
+      Future<http.Response> sendRequest() => http
           .post(
             Uri.parse('$kApi/auth/google'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'idToken': idToken,
-              if (completingRegistration) ...{
-                'acceptedTerms': _acceptedTerms,
-                'ageConfirmed': _ageConfirmed,
-                'gender': _gender,
-                'birthDate':
-                    _birthDate == null ? null : _formatBirthDate(_birthDate!),
-                'contentFilter': _registrationFilter,
-                'contentFilterConfirmed': _filterConfirmed,
-              },
-              if (kPendingInviteId != null) 'inviteId': kPendingInviteId,
-            }),
+            body: requestBody,
           )
           .timeout(const Duration(seconds: 30));
+      var res = await sendRequest();
       if (!mounted) return;
-      final data = jsonDecode(res.body);
+      // A proxy can briefly return an HTML error while the server restarts.
+      // Retry login once; account creation must not be submitted twice.
+      if ((loginAttempt || existingAccount) &&
+          const [502, 503, 504].contains(res.statusCode)) {
+        await Future<void>.delayed(const Duration(seconds: 4));
+        if (!mounted) return;
+        res = await sendRequest();
+        if (!mounted) return;
+      }
+      const unavailableMessage =
+          'שירות הכניסה אינו זמין כרגע. נסה שוב בעוד כמה רגעים.';
+      final Map<String, dynamic> data;
+      try {
+        final decoded = jsonDecode(res.body);
+        if (decoded is! Map<String, dynamic>) {
+          throw const FormatException('Invalid Google login response');
+        }
+        data = decoded;
+      } on FormatException {
+        setState(() {
+          _error = unavailableMessage;
+          _loading = false;
+        });
+        return;
+      }
       if (res.statusCode != 200) {
         if (loginAttempt &&
             _isLogin &&
@@ -4969,7 +4748,6 @@ class _AuthScreenState extends State<AuthScreen> {
           setState(() {
             _isLogin = false;
             _choosingVerification = false;
-            _verificationRequired = false;
             _registrationStep = 0;
             _registrationMethod = 'google';
             _verificationMethod = 'email';
@@ -4994,7 +4772,16 @@ class _AuthScreenState extends State<AuthScreen> {
           return;
         }
         setState(() {
-          _error = data['error'] ?? 'שגיאה';
+          _error = data['error']?.toString() ?? unavailableMessage;
+          _loading = false;
+        });
+        return;
+      }
+      if (data['token'] is! String ||
+          (data['token'] as String).isEmpty ||
+          (data['user'] != null && data['user'] is! Map<String, dynamic>)) {
+        setState(() {
+          _error = unavailableMessage;
           _loading = false;
         });
         return;
@@ -5142,7 +4929,6 @@ class _AuthScreenState extends State<AuthScreen> {
           }
           setState(() {
             _error = data['error'] ?? 'שגיאה';
-            _verificationRequired = data['code'] == 'VERIFICATION_REQUIRED';
             _loading = false;
           });
           return;
@@ -5201,60 +4987,6 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  Future<void> _resendVerification(String method) async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    final email = _emailCtrl.text.trim().toLowerCase();
-    try {
-      final response = await http
-          .post(
-            Uri.parse('$kApi/resend-verification'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'email': email,
-              'password': _passCtrl.text,
-              'method': method,
-            }),
-          )
-          .timeout(const Duration(seconds: 30));
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      if (!mounted) return;
-      if (response.statusCode != 200) {
-        setState(() {
-          _error = data['error'] as String? ?? 'שליחת האימות נכשלה';
-          _loading = false;
-        });
-        return;
-      }
-      if (method == 'phone') {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => VerifyScreen(
-              phone: data['phone'] as String,
-              email: email,
-              method: 'phone',
-            ),
-          ),
-        );
-      } else {
-        setState(() {
-          _verificationRequired = false;
-          _loading = false;
-          _error = 'קישור אימות חדש נשלח ל-$email';
-        });
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _error = 'שגיאת חיבור. נסה שוב.';
-          _loading = false;
-        });
-      }
-    }
-  }
 
   Future<void> _selectRegistrationMethod(String method,
       {GoogleSignInAccount? webAccount}) async {
@@ -5630,7 +5362,7 @@ class _AuthScreenState extends State<AuthScreen> {
               icon: const Icon(Icons.refresh),
               label: const Text('נסה שוב לאמת את חשבון Google שנבחר'),
             ),
-          const Text('יש לך כבר חשבון? אפשר להיכנס עם פרטי הכניסה הקיימים.',
+          const Text('יש לך כבר חשבון? אפשר להיכנס באמצעות Google.',
               textAlign: TextAlign.center,
               style: TextStyle(color: kSubtext, fontSize: 12.5)),
         ]);
@@ -6170,9 +5902,7 @@ class _AuthScreenState extends State<AuthScreen> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    if (!_isLogin) return _buildRegistrationWizard();
+  Widget _buildGoogleLogin() {
     return Scaffold(
       backgroundColor: kIsWeb ? const Color(0xFFF2F7FB) : kBg,
       body: SafeArea(
@@ -6180,325 +5910,148 @@ class _AuthScreenState extends State<AuthScreen> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 480),
             child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+              key: const ValueKey('google-login-card'),
+              height: double.infinity,
+              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              padding: const EdgeInsets.fromLTRB(22, 14, 22, 14),
               decoration: BoxDecoration(
                 color: kBg,
                 borderRadius: BorderRadius.circular(24),
                 boxShadow: kIsWeb
                     ? const [
-                        BoxShadow(
-                          color: Color(0x1A0D4F82),
-                          blurRadius: 28,
-                          offset: Offset(0, 10),
-                        ),
+                        BoxShadow(color: Color(0x1A0D4F82), blurRadius: 24)
                       ]
                     : null,
               ),
-              child: SingleChildScrollView(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    const SizedBox(height: 40),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(22),
-                      child: Image.asset(
-                        'icon_source.png',
-                        width: 88,
-                        height: 88,
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    const Text('בתשובה',
-                        style: TextStyle(
-                            fontSize: 34,
-                            fontWeight: FontWeight.bold,
-                            color: kPrimary)),
-                    const SizedBox(height: 4),
-                    _israelFlag(),
-                    const SizedBox(height: 6),
-                    Text(_isLogin ? 'כניסה לחשבון' : 'יצירת חשבון חדש',
-                        style: const TextStyle(fontSize: 15, color: kSubtext)),
-                    const SizedBox(height: 32),
-                    // Toggle
-                    Container(
-                      decoration: BoxDecoration(
-                          color: kBorder,
-                          borderRadius: BorderRadius.circular(10)),
-                      child: Row(children: [
-                        _TabBtn(
-                            label: 'כניסה',
-                            active: _isLogin,
-                            onTap: () {
-                              if (_loading || _showVerificationSuccess) return;
-                              setState(() {
-                                _isLogin = true;
-                                _choosingVerification = false;
-                                _error = null;
-                              });
-                            }),
-                        _TabBtn(
-                            label: 'הרשמה',
-                            active: !_isLogin,
-                            onTap: () {
-                              if (_loading || _showVerificationSuccess) return;
-                              setState(() {
-                                _isLogin = false;
-                                _choosingVerification = false;
-                                _error = null;
-                              });
-                            }),
-                      ]),
-                    ),
-                    const SizedBox(height: 24),
-                    if (!_isLogin)
-                      _RegistrationProgress(
-                          current: _choosingVerification ? 2 : 1),
-                    if (!_isLogin) ...[
-                      TextField(
-                        controller: _nameCtrl,
-                        textDirection: TextDirection.rtl,
-                        decoration: const InputDecoration(
-                            labelText: 'שם מלא',
-                            prefixIcon: Icon(Icons.person_outline)),
-                      ),
-                      const SizedBox(height: 14),
-                      BirthDateSelection(
-                        value: _birthDate,
-                        onChanged: (value) =>
-                            setState(() => _birthDate = value),
-                      ),
-                      const SizedBox(height: 14),
-                      DropdownButtonFormField<String>(
-                        initialValue: _gender,
-                        decoration: const InputDecoration(
-                          labelText: 'מגדר',
-                          prefixIcon: Icon(Icons.wc_outlined),
-                        ),
-                        items: const [
-                          DropdownMenuItem(value: 'male', child: Text('זכר')),
-                          DropdownMenuItem(
-                              value: 'female', child: Text('נקבה')),
-                        ],
-                        onChanged: (value) => setState(() => _gender = value),
-                      ),
-                      const SizedBox(height: 14),
-                    ],
-                    if (!_isLogin) ...[
-                      TextField(
-                        controller: _phoneCtrl,
-                        keyboardType: TextInputType.phone,
-                        textDirection: TextDirection.ltr,
-                        decoration: const InputDecoration(
-                          labelText: 'מספר טלפון',
-                          hintText: '05X-XXX-XXXX',
-                          prefixIcon: Icon(Icons.phone_android),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                    ],
-                    TextField(
-                      controller: _emailCtrl,
-                      keyboardType: TextInputType.emailAddress,
-                      textDirection: TextDirection.ltr,
-                      decoration: const InputDecoration(
-                          labelText: 'כתובת אימייל',
-                          prefixIcon: Icon(Icons.email_outlined)),
-                    ),
-                    const SizedBox(height: 14),
-                    TextField(
-                      controller: _passCtrl,
-                      obscureText: true,
-                      textDirection: TextDirection.ltr,
-                      decoration: const InputDecoration(
-                          labelText: 'סיסמה',
-                          prefixIcon: Icon(Icons.lock_outline)),
-                    ),
-                    if (!_isLogin && _choosingVerification) ...[
-                      const SizedBox(height: 18),
-                      const Align(
-                        alignment: Alignment.centerRight,
-                        child: Text('הפרטים תקינים — איך תרצה לאמת?',
+              child: Column(children: [
+                Row(children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child:
+                        Image.asset('icon_source.png', width: 46, height: 46),
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('בתשובה',
                             style: TextStyle(
-                                fontSize: 13, fontWeight: FontWeight.w600)),
-                      ),
-                      const SizedBox(height: 8),
-                      Container(
-                        decoration: BoxDecoration(
-                            color: kBorder,
-                            borderRadius: BorderRadius.circular(10)),
-                        child: Row(children: [
-                          _TabBtn(
-                            label: 'באימייל',
-                            active: _verificationMethod == 'email',
-                            onTap: () =>
-                                setState(() => _verificationMethod = 'email'),
-                          ),
-                          _TabBtn(
-                            label: 'בטלפון',
-                            active: _verificationMethod == 'phone',
-                            onTap: () =>
-                                setState(() => _verificationMethod = 'phone'),
-                          ),
-                        ]),
-                      ),
-                    ],
-                    if (!_isLogin) ...[
-                      _RegistrationFilterSelector(
-                        filter: _registrationFilter,
-                        confirmed: _filterConfirmed,
-                        onChanged: (value) => setState(() {
-                          _registrationFilter = value;
-                          _filterConfirmed = false;
-                        }),
-                        onConfirmed: (value) =>
-                            setState(() => _filterConfirmed = value),
-                      ),
-                      const _BetaNotice(),
-                      const SizedBox(height: 6),
-                      CheckboxListTile(
-                        contentPadding: EdgeInsets.zero,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        value: _ageConfirmed,
-                        onChanged: (value) =>
-                            setState(() => _ageConfirmed = value == true),
-                        title: const Text('אני בן/בת 18 ומעלה',
-                            style: TextStyle(fontSize: 13)),
-                      ),
-                      _TermsAgreementTile(
-                        value: _acceptedTerms,
-                        onChanged: (value) =>
-                            setState(() => _acceptedTerms = value == true),
-                      ),
-                    ],
-                    if (_isLogin) ...[
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton(
-                          onPressed: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) => const ForgotPasswordScreen()),
-                          ),
-                          child: const Text('שכחתי סיסמה',
-                              style: TextStyle(color: kSubtext, fontSize: 13)),
-                        ),
-                      ),
-                    ] else
-                      const SizedBox(height: 12),
-                    if (_error != null)
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                            color: Colors.red.shade50,
-                            borderRadius: BorderRadius.circular(8)),
-                        child: Text(_error!,
-                            style: const TextStyle(
-                                color: Colors.red, fontSize: 13)),
-                      ),
-                    if (_isLogin && _verificationRequired) ...[
-                      const SizedBox(height: 10),
-                      Row(children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _loading
-                                ? null
-                                : () => _resendVerification('email'),
-                            icon: const Icon(Icons.email_outlined),
-                            label: const Text('שלח שוב למייל'),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _loading
-                                ? null
-                                : () => _resendVerification('phone'),
-                            icon: const Icon(Icons.sms_outlined),
-                            label: const Text('אמת בטלפון'),
-                          ),
-                        ),
-                      ]),
-                    ],
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: _loading ? null : _submit,
-                        child: _loading
-                            ? const SizedBox(
-                                height: 22,
-                                width: 22,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: Colors.white))
-                            : Text(
-                                _isLogin
-                                    ? 'כניסה'
-                                    : _choosingVerification
-                                        ? 'יצירת חשבון ושליחת אימות'
-                                        : 'המשך לשלב האימות',
-                                style: const TextStyle(
-                                    fontSize: 16, fontWeight: FontWeight.bold)),
-                      ),
+                                color: kPrimary,
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800)),
+                        Text('כניסה לחשבון',
+                            style: TextStyle(color: kSubtext, fontSize: 12)),
+                      ],
                     ),
-                    const SizedBox(height: 16),
-                    Row(children: [
-                      const Expanded(child: Divider(color: kBorder)),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: Text('או',
-                            style: TextStyle(color: kSubtext, fontSize: 13)),
-                      ),
-                      const Expanded(child: Divider(color: kBorder)),
-                    ]),
-                    const SizedBox(height: 14),
-                    SizedBox(
+                  ),
+                  TextButton(
+                    onPressed: _loading
+                        ? null
+                        : () => setState(() {
+                              _isLogin = false;
+                              _choosingVerification = false;
+                              _error = null;
+                            }),
+                    child: const Text('הרשמה'),
+                  ),
+                ]),
+                const SizedBox(height: 28),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: SizedBox(
                       width: double.infinity,
-                      child: kIsWeb
-                          ? GoogleWebSignInButton(
-                              googleSignIn: _googleSignIn,
-                              enabled: !_loading,
-                              onSignedIn: (account) =>
-                                  _signInWithGoogle(webAccount: account),
-                            )
-                          : OutlinedButton.icon(
-                              onPressed: _loading ? null : _signInWithGoogle,
-                              icon: Image.network(
-                                'https://developers.google.com/static/identity/images/g-logo.png',
-                                width: 18,
-                                height: 18,
-                                errorBuilder: (_, __, ___) =>
-                                    const SizedBox(width: 18, height: 18),
-                              ),
-                              label: const Text('המשך עם Google',
-                                  style: TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w600,
-                                      color: kTextDark)),
-                              style: OutlinedButton.styleFrom(
-                                side: const BorderSide(
-                                    color: kBorder, width: 1.5),
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 13),
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12)),
-                              ),
+                      child: Column(children: [
+                        Semantics(
+                          header: true,
+                          child: const Text('כניסה באמצעות Google',
+                              style: TextStyle(
+                                  fontSize: 20, fontWeight: FontWeight.w800)),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                            'בחר את חשבון Google המקושר לחשבון שלך כדי להיכנס לבתשובה.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: kSubtext, fontSize: 12.5)),
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          key: const ValueKey('google-login-button'),
+                          width: double.infinity,
+                          child: kIsWeb
+                              ? GoogleWebSignInButton(
+                                  googleSignIn: _googleSignIn,
+                                  enabled: !_loading,
+                                  onSignedIn: (account) =>
+                                      _signInWithGoogle(webAccount: account),
+                                )
+                              : OutlinedButton.icon(
+                                  onPressed:
+                                      _loading ? null : _signInWithGoogle,
+                                  icon: Image.network(
+                                    'https://developers.google.com/static/identity/images/g-logo.png',
+                                    width: 18,
+                                    height: 18,
+                                    errorBuilder: (_, __, ___) =>
+                                        const SizedBox(width: 18, height: 18),
+                                  ),
+                                  label: const Text('המשך עם Google',
+                                      style: TextStyle(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w600,
+                                          color: kTextDark)),
+                                  style: OutlinedButton.styleFrom(
+                                    side: const BorderSide(
+                                        color: kBorder, width: 1.5),
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 13),
+                                    shape: RoundedRectangleBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(12)),
+                                  ),
+                                ),
+                        ),
+                        if (_loading && !kIsWeb) ...[
+                          const SizedBox(height: 14),
+                          const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child:
+                                  CircularProgressIndicator(strokeWidth: 2)),
+                        ],
+                        if (_error != null) ...[
+                          const SizedBox(height: 14),
+                          Semantics(
+                            liveRegion: true,
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                  color: Colors.red.shade50,
+                                  borderRadius: BorderRadius.circular(9)),
+                              child: Text(_error!,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                      color: Colors.red, fontSize: 13)),
                             ),
+                          ),
+                        ],
+                      ]),
                     ),
-                    const SizedBox(height: 8),
-                    _androidDownloadLink(),
-                  ],
+                  ),
                 ),
-              ),
+                const SizedBox(height: 8),
+                _androidDownloadLink(),
+              ]),
             ),
           ),
         ),
       ),
     );
   }
+
+  @override
+  Widget build(BuildContext context) =>
+      _isLogin ? _buildGoogleLogin() : _buildRegistrationWizard();
 }
 
 // ── Phone Setup Screen (after Google Sign-In) ────────────────────
@@ -7848,59 +7401,6 @@ class _BirthDateFieldState extends State<_BirthDateField> {
       );
 }
 
-class _BetaNotice extends StatelessWidget {
-  const _BetaNotice();
-
-  @override
-  Widget build(BuildContext context) => Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: const Color(0xFFEAF5FD),
-          border: Border.all(color: kBorder),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: const Text(
-          'BETSHUVA מופעלת על ידי בתשובה פתרונות דיגיטליים בע״מ, ח״פ '
-          '517401238, בגרסת בטא פתוחה וללא תשלום לבני 18 ומעלה בלבד. '
-          'השירות נמצא בבדיקה ועלולות להתרחש תקלות, הפסקות זמניות, שינויים '
-          'או אובדן מידע. אין לשמור בשירות מידע שהעותק היחיד שלו נמצא '
-          'באפליקציה. השימוש כפוף לתנאי השימוש ולמדיניות הפרטיות. '
-          'לפניות: support@betshuva.com',
-          textDirection: TextDirection.rtl,
-          style: TextStyle(fontSize: 12, height: 1.45, color: kTextDark),
-        ),
-      );
-}
-
-class _TabBtn extends StatelessWidget {
-  final String label;
-  final bool active;
-  final VoidCallback onTap;
-  const _TabBtn(
-      {required this.label, required this.active, required this.onTap});
-  @override
-  Widget build(BuildContext context) => Expanded(
-        child: GestureDetector(
-          onTap: onTap,
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            decoration: BoxDecoration(
-              color: active ? kPrimary : Colors.transparent,
-              borderRadius: BorderRadius.circular(9),
-            ),
-            child: Text(
-              label,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: active ? Colors.white : kSubtext,
-                fontWeight: active ? FontWeight.bold : FontWeight.normal,
-              ),
-            ),
-          ),
-        ),
-      );
-}
 
 // ── Verify Screen (SMS + Email after registration) ────────────────
 class VerifyScreen extends StatefulWidget {
@@ -14978,6 +14478,7 @@ class _PopularValueField extends StatefulWidget {
   final String? hint;
   final List<String> options;
   final ValueChanged<String>? onChanged;
+  final Widget? suffixIcon;
   const _PopularValueField({
     super.key,
     required this.controller,
@@ -14985,6 +14486,7 @@ class _PopularValueField extends StatefulWidget {
     required this.options,
     this.onChanged,
     this.hint,
+    this.suffixIcon,
   });
 
   @override
@@ -15008,9 +14510,11 @@ class _PopularValueFieldState extends State<_PopularValueField> {
         builder: (context, setSheetState) {
           final normalizedQuery = normalizeListingSearchText(query);
           final filtered = widget.options
-              .where((value) =>
-                  normalizedQuery.isEmpty ||
-                  normalizeListingSearchText(value).contains(normalizedQuery))
+              .where(
+                (value) =>
+                    normalizedQuery.isEmpty ||
+                    normalizeListingSearchText(value).contains(normalizedQuery),
+              )
               .toList();
           return Directionality(
             textDirection: TextDirection.rtl,
@@ -15018,54 +14522,66 @@ class _PopularValueFieldState extends State<_PopularValueField> {
               heightFactor: .78,
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
-                child: Column(children: [
-                  Container(
-                    width: 42,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFBDD0DF),
-                      borderRadius: BorderRadius.circular(4),
+                child: Column(
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFBDD0DF),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  Text('בחירת ${widget.label}',
+                    const SizedBox(height: 12),
+                    Text(
+                      'בחירת ${widget.label}',
                       style: const TextStyle(
-                          fontSize: 19, fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 12),
-                  TextField(
-                    autofocus: true,
-                    textDirection: TextDirection.rtl,
-                    onChanged: (value) => setSheetState(() => query = value),
-                    decoration: InputDecoration(
-                      hintText: 'חיפוש מתוך ${widget.options.length} אפשרויות',
-                      prefixIcon: const Icon(Icons.search),
-                      border: const OutlineInputBorder(),
+                        fontSize: 19,
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: filtered.isEmpty
-                        ? const Center(
-                            child: Text(
-                                'לא נמצאה אפשרות — אפשר להקליד ידנית בשדה'))
-                        : ListView.separated(
-                            itemCount: filtered.length,
-                            separatorBuilder: (_, __) =>
-                                const Divider(height: 1),
-                            itemBuilder: (_, index) {
-                              final value = filtered[index];
-                              return ListTile(
-                                title: Text(value),
-                                trailing: widget.controller.text == value
-                                    ? const Icon(Icons.check_circle,
-                                        color: kPrimary)
-                                    : null,
-                                onTap: () => Navigator.pop(sheetContext, value),
-                              );
-                            },
-                          ),
-                  ),
-                ]),
+                    const SizedBox(height: 12),
+                    TextField(
+                      autofocus: true,
+                      textDirection: TextDirection.rtl,
+                      onChanged: (value) => setSheetState(() => query = value),
+                      decoration: InputDecoration(
+                        hintText:
+                            'חיפוש מתוך ${widget.options.length} אפשרויות',
+                        prefixIcon: const Icon(Icons.search),
+                        border: const OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: filtered.isEmpty
+                          ? const Center(
+                              child: Text(
+                                'לא נמצאה אפשרות — אפשר להקליד ידנית בשדה',
+                              ),
+                            )
+                          : ListView.separated(
+                              itemCount: filtered.length,
+                              separatorBuilder: (_, __) =>
+                                  const Divider(height: 1),
+                              itemBuilder: (_, index) {
+                                final value = filtered[index];
+                                return ListTile(
+                                  title: Text(value),
+                                  trailing: widget.controller.text == value
+                                      ? const Icon(
+                                          Icons.check_circle,
+                                          color: kPrimary,
+                                        )
+                                      : null,
+                                  onTap: () =>
+                                      Navigator.pop(sheetContext, value),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
               ),
             ),
           );
@@ -15093,6 +14609,7 @@ class _PopularValueFieldState extends State<_PopularValueField> {
         decoration: InputDecoration(
           labelText: widget.label,
           hintText: widget.hint,
+          suffixIcon: widget.suffixIcon,
           border: const OutlineInputBorder(),
         ),
       );
@@ -15103,9 +14620,11 @@ class _PopularValueFieldState extends State<_PopularValueField> {
       displayStringForOption: (option) => option,
       optionsBuilder: (value) {
         final query = normalizeListingSearchText(value.text);
-        return widget.options.where((option) =>
-            query.isEmpty ||
-            normalizeListingSearchText(option).contains(query));
+        return widget.options.where(
+          (option) =>
+              query.isEmpty ||
+              normalizeListingSearchText(option).contains(query),
+        );
       },
       onSelected: (option) {
         widget.controller.text = option;
@@ -15122,11 +14641,25 @@ class _PopularValueFieldState extends State<_PopularValueField> {
           hintText: widget.hint,
           helperText:
               '${widget.options.length} אפשרויות — אפשר גם להקליד ערך אחר',
-          suffixIcon: IconButton(
-            tooltip: 'הצג את כל האפשרויות',
-            onPressed: _showAllOptions,
-            icon: const Icon(Icons.arrow_drop_down_circle_outlined),
-          ),
+          suffixIcon: widget.suffixIcon == null
+              ? IconButton(
+                  tooltip: 'הצג את כל האפשרויות',
+                  onPressed: _showAllOptions,
+                  icon: const Icon(Icons.arrow_drop_down_circle_outlined),
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    widget.suffixIcon!,
+                    IconButton(
+                      tooltip: 'הצג את כל האפשרויות',
+                      onPressed: _showAllOptions,
+                      icon: const Icon(
+                        Icons.arrow_drop_down_circle_outlined,
+                      ),
+                    ),
+                  ],
+                ),
           border: const OutlineInputBorder(),
         ),
       ),
@@ -15162,11 +14695,13 @@ class _LocationAutocompleteField extends StatelessWidget {
   final String label;
   final String? hint;
   final ValueChanged<String>? onChanged;
+  final Widget? suffixIcon;
   const _LocationAutocompleteField({
     required this.controller,
     this.label = 'עיר או אזור',
     this.hint,
     this.onChanged,
+    this.suffixIcon,
   });
 
   @override
@@ -15177,6 +14712,7 @@ class _LocationAutocompleteField extends StatelessWidget {
         hint: hint,
         onChanged: onChanged,
         onSelected: onChanged,
+        suffixIcon: suffixIcon,
       );
 }
 
@@ -15288,14 +14824,15 @@ class ListingsScreen extends StatefulWidget {
       onConversationStarted;
   final int currentMainNavigationIndex;
   final ValueChanged<int> onMainNavigationSelected;
-  const ListingsScreen(
-      {super.key,
-      required this.token,
-      required this.me,
-      required this.socket,
-      required this.currentMainNavigationIndex,
-      required this.onMainNavigationSelected,
-      this.onConversationStarted});
+  const ListingsScreen({
+    super.key,
+    required this.token,
+    required this.me,
+    required this.socket,
+    required this.currentMainNavigationIndex,
+    required this.onMainNavigationSelected,
+    this.onConversationStarted,
+  });
   @override
   State<ListingsScreen> createState() => _ListingsScreenState();
 }
@@ -15303,6 +14840,8 @@ class ListingsScreen extends StatefulWidget {
 class _ListingsScreenState extends State<ListingsScreen> {
   List<Map<String, dynamic>> _items = [];
   bool _loading = true;
+  String? _loadError;
+  int _loadSerial = 0;
   String _typeFilter = 'all'; // all / free / sale
   String _catFilter = 'הכל';
   String _cityFilter = '';
@@ -15319,6 +14858,8 @@ class _ListingsScreenState extends State<ListingsScreen> {
   Map<String, dynamic>? _selectedItem;
   bool _showPostForm = false;
   bool _showMyListings = false;
+  bool _showSearchForm = false;
+  final _advancedSearchKey = GlobalKey<_AdvancedListingSearchScreenState>();
   final _desktopContentNavigatorKey = GlobalKey<NavigatorState>();
 
   int _imageRevision = listingBackgroundImages.revision;
@@ -15371,6 +14912,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
   void _clearAllFilters() {
     _searchDebounce?.cancel();
     _searchCtrl.clear();
+    _advancedSearchKey.currentState?._resetDraft();
     setState(() {
       _typeFilter = 'all';
       _catFilter = 'הכל';
@@ -15382,38 +14924,115 @@ class _ListingsScreenState extends State<ListingsScreen> {
       _conditionFilter = 'all';
       _detailFilters = {};
       _radius = 0;
+      if (MediaQuery.sizeOf(context).width < 900) {
+        _showSearchForm = false;
+      }
     });
     _load();
   }
 
+  ListingSearchFilters get _activeSearchFilters => ListingSearchFilters(
+        type: _typeFilter,
+        category: _catFilter,
+        city: _cityFilter,
+        query: _queryFilter,
+        minPrice: _minPrice,
+        maxPrice: _maxPrice,
+        sort: _sortFilter,
+        condition: _conditionFilter,
+        details: Map.of(_detailFilters),
+        radius: _radius,
+      );
+
+  void _applyAdvancedSearch(ListingSearchFilters filters) {
+    _searchDebounce?.cancel();
+    setState(() {
+      _typeFilter = filters.type;
+      _catFilter = filters.category;
+      _cityFilter = filters.city;
+      _queryFilter = filters.query;
+      _searchCtrl.text = filters.query;
+      _minPrice = filters.minPrice;
+      _maxPrice = filters.maxPrice;
+      _sortFilter = filters.sort;
+      _conditionFilter = filters.condition;
+      _detailFilters = Map.of(filters.details);
+      _radius = filters.radius;
+      if (MediaQuery.sizeOf(context).width < 900) {
+        _showSearchForm = false;
+      }
+    });
+    _load();
+  }
+
+  void _openAdvancedSearch() {
+    _closeDesktopContentRoutes();
+    if (MediaQuery.sizeOf(context).width >= 900) {
+      setState(() {
+        _selectedItem = null;
+        _showPostForm = false;
+        _showMyListings = false;
+        _showSearchForm = true;
+      });
+      return;
+    }
+    Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (searchContext) {
+          return AdvancedListingSearchScreen(
+            initialFilters: _activeSearchFilters,
+            onApply: (filters) {
+              _applyAdvancedSearch(filters);
+              Navigator.pop(searchContext);
+            },
+            onClear: () {
+              _clearAllFilters();
+              Navigator.pop(searchContext);
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _advancedSearchPane() => AdvancedListingSearchScreen(
+        key: _advancedSearchKey,
+        initialFilters: _activeSearchFilters,
+        embedded: true,
+        onClose: () => setState(() => _showSearchForm = false),
+        onApply: _applyAdvancedSearch,
+        onClear: _clearAllFilters,
+      );
+
   Future<void> _load() async {
     final pictureRevision = _profilePicturesRevision;
     if (!mounted) return;
-    setState(() => _loading = true);
+    final serial = ++_loadSerial;
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
     try {
-      final params = <String, String>{'page': '1'};
-      if (_typeFilter != 'all') params['type'] = _typeFilter;
-      if (_catFilter != 'הכל') params['category'] = _catFilter;
-      if (_cityFilter.isNotEmpty) params['city'] = _cityFilter;
-      if (_queryFilter.isNotEmpty) params['q'] = _queryFilter;
-      if (_minPrice != null) params['minPrice'] = _minPrice.toString();
-      if (_maxPrice != null) params['maxPrice'] = _maxPrice.toString();
-      if (_sortFilter != 'newest') params['sort'] = _sortFilter;
-      if (_conditionFilter != 'all') params['condition'] = _conditionFilter;
-      for (final entry in _detailFilters.entries) {
-        if (entry.value.trim().isNotEmpty) {
-          params['detail_${entry.key}'] = entry.value.trim();
-        }
-      }
-      if (_radius > 0) params['radius'] = _radius.toStringAsFixed(0);
+      final params = _activeSearchFilters.queryParameters;
       final uri = Uri.parse('$kApi/listings').replace(queryParameters: params);
-      final res = await http
-          .get(uri, headers: {'Authorization': 'Bearer ${widget.token}'});
-      if (!mounted) return;
-      final data = jsonDecode(res.body);
+      final res = await http.get(
+        uri,
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted || serial != _loadSerial) return;
+      final data = jsonDecode(utf8.decode(res.bodyBytes));
+      if (res.statusCode != 200 || data is! List) {
+        setState(() {
+          _loading = false;
+          _loadError = data is Map && data['error'] is String
+              ? data['error'] as String
+              : 'לא ניתן לטעון מודעות כרגע';
+        });
+        return;
+      }
       final items = List<Map<String, dynamic>>.from(data);
-      if (res.statusCode == 200)
-        _approveProfilePictures(items, pictureRevision);
+      _approveProfilePictures(items, pictureRevision);
       _persistRecentImageUrls(items).ignore();
       setState(() {
         _items = items;
@@ -15425,20 +15044,30 @@ class _ListingsScreenState extends State<ListingsScreen> {
         _loading = false;
       });
     } catch (_) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && serial == _loadSerial) {
+        setState(() {
+          _loading = false;
+          _loadError = 'לא ניתן לטעון מודעות כרגע. נסה שוב';
+        });
+      }
     }
   }
 
   void _closeDesktopContentRoutes() {
-    _desktopContentNavigatorKey.currentState
-        ?.popUntil((route) => route.isFirst);
+    _desktopContentNavigatorKey.currentState?.popUntil(
+      (route) => route.isFirst,
+    );
   }
 
   void _askListingAi(Map<String, dynamic> item) {
     final navigator = _desktopContentNavigatorKey.currentState;
     if (MediaQuery.sizeOf(context).width >= 900 && navigator != null) {
-      _OpenListingAiNotification(item, widget.token, widget.me, widget.socket)
-          .openIn(navigator);
+      _OpenListingAiNotification(
+        item,
+        widget.token,
+        widget.me,
+        widget.socket,
+      ).openIn(navigator);
       return;
     }
     _openListingAi(context, item, widget.token, widget.me, widget.socket);
@@ -15451,20 +15080,22 @@ class _ListingsScreenState extends State<ListingsScreen> {
         _selectedItem = null;
         _showPostForm = true;
         _showMyListings = false;
+        _showSearchForm = false;
       });
       return;
     }
     final ok = await Navigator.push<bool>(
-        context,
-        MaterialPageRoute(
-          builder: (_) => PostListingScreen(token: widget.token, me: widget.me),
-        ));
+      context,
+      MaterialPageRoute(
+        builder: (_) => PostListingScreen(token: widget.token, me: widget.me),
+      ),
+    );
     if (ok == true) {
       await _load();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('המודעה פורסמה בהצלחה')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('המודעה פורסמה בהצלחה')));
       }
     }
   }
@@ -15476,19 +15107,22 @@ class _ListingsScreenState extends State<ListingsScreen> {
         _selectedItem = item;
         _showPostForm = false;
         _showMyListings = false;
+        _showSearchForm = false;
       });
       return;
     }
     final updated = await Navigator.push<bool>(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ListingDetailScreen(
-              item: item,
-              token: widget.token,
-              me: widget.me,
-              socket: widget.socket,
-              onConversationStarted: widget.onConversationStarted),
-        ));
+      context,
+      MaterialPageRoute(
+        builder: (_) => ListingDetailScreen(
+          item: item,
+          token: widget.token,
+          me: widget.me,
+          socket: widget.socket,
+          onConversationStarted: widget.onConversationStarted,
+        ),
+      ),
+    );
     if (updated == true) await _load();
   }
 
@@ -15513,24 +15147,33 @@ class _ListingsScreenState extends State<ListingsScreen> {
                   _selectedItem = null;
                   _showPostForm = false;
                   _showMyListings = true;
+                  _showSearchForm = false;
                   _closeDesktopContentRoutes();
                 });
               } else {
                 Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => MyListingsScreen(token: widget.token),
-                    ));
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => MyListingsScreen(token: widget.token),
+                  ),
+                );
               }
             },
           ),
           TextButton.icon(
             onPressed: _openPost,
-            icon: const Icon(Icons.add_business_outlined,
-                color: Colors.white, size: 20),
-            label: const Text('פרסום מתקדם',
-                style: TextStyle(
-                    color: Colors.white, fontWeight: FontWeight.bold)),
+            icon: const Icon(
+              Icons.add_business_outlined,
+              color: Colors.white,
+              size: 20,
+            ),
+            label: const Text(
+              'פרסום מתקדם',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
           ),
         ],
         bottom: PreferredSize(
@@ -15545,101 +15188,163 @@ class _ListingsScreenState extends State<ListingsScreen> {
           ),
         ),
       ),
-      body: Column(children: [
-        Container(
-          color: const Color(0xFFF5F7FA),
-          padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
-          child: Column(children: [
-            TextField(
-              controller: _searchCtrl,
-              onChanged: _onSearchChanged,
-              textDirection: TextDirection.rtl,
-              decoration: InputDecoration(
-                hintText: 'חיפוש במודעות... ',
-                prefixIcon: const Icon(Icons.search, size: 21),
-                suffixIcon: _searchCtrl.text.isEmpty
-                    ? null
-                    : IconButton(
-                        tooltip: 'נקה חיפוש',
-                        icon: const Icon(Icons.close, size: 19),
-                        onPressed: () {
-                          _searchCtrl.clear();
-                          setState(() => _queryFilter = '');
-                          _load();
-                        },
-                      ),
-                filled: true,
-                fillColor: Colors.white,
-                isDense: true,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
+      body: Column(
+        children: [
+          Container(
+            color: const Color(0xFFF5F7FA),
+            padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+            child: Column(
+              children: [
+                TextField(
+                  controller: _searchCtrl,
+                  onChanged: _onSearchChanged,
+                  textDirection: TextDirection.rtl,
+                  decoration: InputDecoration(
+                    hintText: 'חיפוש במודעות... ',
+                    prefixIcon: const Icon(Icons.search, size: 21),
+                    suffixIcon: _searchCtrl.text.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'נקה חיפוש',
+                            icon: const Icon(Icons.close, size: 19),
+                            onPressed: () {
+                              _searchDebounce?.cancel();
+                              _searchCtrl.clear();
+                              setState(() => _queryFilter = '');
+                              _load();
+                            },
+                          ),
+                    filled: true,
+                    fillColor: Colors.white,
+                    isDense: true,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
                 ),
-              ),
-            ),
-            const SizedBox(height: 7),
-            Row(children: [
-              _quickFilterChip('all', 'הכול'),
-              const SizedBox(width: 5),
-              _quickFilterChip('free', 'למסירה'),
-              const SizedBox(width: 5),
-              _quickFilterChip('sale', 'למכירה'),
-              const Spacer(),
-              TextButton.icon(
-                onPressed: _showFilterSheet,
-                icon: Icon(Icons.tune,
-                    size: 18, color: _hasAdvancedFilters ? kPrimary : kSubtext),
-                label: Text(
-                  _hasAdvancedFilters ? 'סינון פעיל' : 'סינון',
-                  style: TextStyle(
-                      color: _hasAdvancedFilters ? kPrimary : kSubtext,
-                      fontSize: 12),
-                ),
-              ),
-            ]),
-          ]),
-        ),
-        // ── List ────────────────────────────────────────────────────
-        Expanded(
-          child: _loading
-              ? const Center(child: CircularProgressIndicator())
-              : _items.isEmpty
-                  ? Center(
-                      child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      Icon(Icons.storefront_outlined,
-                          size: 64, color: kSubtext),
-                      const SizedBox(height: 12),
-                      Text(
-                          _hasAdvancedFilters
-                              ? 'לא נמצאו מודעות לפי הסינון'
-                              : 'אין מודעות כרגע',
-                          style: TextStyle(color: kSubtext, fontSize: 16)),
-                      const SizedBox(height: 8),
-                      if (_hasAdvancedFilters)
-                        ElevatedButton.icon(
-                          onPressed: _clearAllFilters,
-                          icon: const Icon(Icons.filter_alt_off_outlined),
-                          label: const Text('נקה את כל המסננים'),
-                        )
-                      else
-                        TextButton(
-                            onPressed: _openPost,
-                            child: const Text('פרסם ראשון!')),
-                    ]))
-                  : RefreshIndicator(
-                      onRefresh: _load,
-                      child: ListView.builder(
-                        padding: const EdgeInsets.all(12),
-                        itemCount: _items.length,
-                        itemBuilder: (_, i) => _ListingCard(
-                            item: _items[i],
-                            selected: _selectedItem?['id'] == _items[i]['id'],
-                            onAskAi: () => _askListingAi(_items[i]),
-                            onTap: () => _openDetail(_items[i])),
+                const SizedBox(height: 7),
+                Row(
+                  children: [
+                    _quickFilterChip('all', 'הכול'),
+                    const SizedBox(width: 5),
+                    _quickFilterChip('free', 'למסירה'),
+                    const SizedBox(width: 5),
+                    _quickFilterChip('sale', 'למכירה'),
+                    Expanded(
+                      child: Align(
+                        alignment: AlignmentDirectional.centerEnd,
+                        child: TextButton.icon(
+                          key: const ValueKey('open-listing-advanced-search'),
+                          onPressed: _openAdvancedSearch,
+                          icon: Icon(
+                            Icons.tune,
+                            size: 18,
+                            color: _hasAdvancedFilters ? kPrimary : kSubtext,
+                          ),
+                          label: Text(
+                            'חיפוש מתקדם',
+                            maxLines: 2,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: _hasAdvancedFilters ? kPrimary : kSubtext,
+                              fontWeight: _hasAdvancedFilters
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
                       ),
                     ),
-        ),
-      ]),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          // ── List ────────────────────────────────────────────────────
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _loadError != null
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.search_off,
+                                color: kSubtext,
+                                size: 44,
+                              ),
+                              const SizedBox(height: 12),
+                              Text(_loadError!, textAlign: TextAlign.center),
+                              const SizedBox(height: 12),
+                              TextButton(
+                                onPressed: _load,
+                                child: const Text('נסה שוב'),
+                              ),
+                              if (_hasAdvancedFilters)
+                                TextButton(
+                                  onPressed: _clearAllFilters,
+                                  child: const Text('נקה את כל המסננים'),
+                                ),
+                            ],
+                          ),
+                        ),
+                      )
+                    : _items.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.storefront_outlined,
+                                  size: 64,
+                                  color: kSubtext,
+                                ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  _hasAdvancedFilters
+                                      ? 'לא נמצאו מודעות לפי הסינון'
+                                      : 'אין מודעות כרגע',
+                                  style:
+                                      TextStyle(color: kSubtext, fontSize: 16),
+                                ),
+                                const SizedBox(height: 8),
+                                if (_hasAdvancedFilters)
+                                  ElevatedButton.icon(
+                                    onPressed: _clearAllFilters,
+                                    icon: const Icon(
+                                        Icons.filter_alt_off_outlined),
+                                    label: const Text('נקה את כל המסננים'),
+                                  )
+                                else
+                                  TextButton(
+                                    onPressed: _openPost,
+                                    child: const Text('פרסם ראשון!'),
+                                  ),
+                              ],
+                            ),
+                          )
+                        : RefreshIndicator(
+                            onRefresh: _load,
+                            child: ListView.builder(
+                              padding: const EdgeInsets.all(12),
+                              itemCount: _items.length,
+                              itemBuilder: (_, i) => _ListingCard(
+                                item: _items[i],
+                                selected:
+                                    _selectedItem?['id'] == _items[i]['id'],
+                                onAskAi: () => _askListingAi(_items[i]),
+                                onTap: () => _openDetail(_items[i]),
+                              ),
+                            ),
+                          ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _openPost,
         backgroundColor: kPrimary,
@@ -15647,7 +15352,9 @@ class _ListingsScreenState extends State<ListingsScreen> {
         label: const Text('פרסום מתקדם', style: TextStyle(color: Colors.white)),
       ),
     );
-    if (MediaQuery.sizeOf(context).width < 900) return listPane;
+    if (MediaQuery.sizeOf(context).width < 900) {
+      return _showSearchForm ? _advancedSearchPane() : listPane;
+    }
     return NotificationListener<_OpenListingAiNotification>(
       onNotification: (notification) {
         final navigator = _desktopContentNavigatorKey.currentState;
@@ -15660,66 +15367,81 @@ class _ListingsScreenState extends State<ListingsScreen> {
           final navigator = _desktopContentNavigatorKey.currentState;
           if (navigator == null) return false;
           notification.handledInDesktopPane = true;
-          navigator.push(MaterialPageRoute<void>(
-            builder: (_) => ListingDetailScreen(
-              item: notification.listing,
-              token: widget.token,
-              me: widget.me,
-              socket: widget.socket,
-              embedded: true,
-              onClose: () => navigator.pop(),
-              onConversationStarted: widget.onConversationStarted,
+          navigator.push(
+            MaterialPageRoute<void>(
+              builder: (_) => ListingDetailScreen(
+                item: notification.listing,
+                token: widget.token,
+                me: widget.me,
+                socket: widget.socket,
+                embedded: true,
+                onClose: () => navigator.pop(),
+                onConversationStarted: widget.onConversationStarted,
+              ),
             ),
-          ));
+          );
           return true;
         },
-        child: Row(children: [
-          SizedBox(width: 410, child: listPane),
-          const VerticalDivider(
-              width: 1, thickness: 1, color: Color(0xFFD9DEE1)),
-          Expanded(
-            child: _DesktopContentPane(
-              navigatorKey: _desktopContentNavigatorKey,
-              child: _showMyListings
-                  ? MyListingsScreen(
-                      token: widget.token,
-                      embedded: true,
-                      onClose: () => setState(() => _showMyListings = false),
-                    )
-                  : _showPostForm
-                      ? PostListingScreen(
-                          token: widget.token,
-                          me: widget.me,
-                          embedded: true,
-                          onClose: () => setState(() => _showPostForm = false),
-                          onPublished: () async {
-                            setState(() => _showPostForm = false);
-                            await _load();
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                      content: Text('המודעה פורסמה בהצלחה')));
-                            }
-                          },
-                        )
-                      : _selectedItem == null
-                          ? const _DesktopListingWelcome()
-                          : ListingDetailScreen(
-                              key: ValueKey(_selectedItem!['id']),
-                              item: _selectedItem!,
-                              token: widget.token,
-                              me: widget.me,
-                              socket: widget.socket,
-                              embedded: true,
-                              onClose: () =>
-                                  setState(() => _selectedItem = null),
-                              onUpdated: _load,
-                              onConversationStarted:
-                                  widget.onConversationStarted,
-                            ),
+        child: Row(
+          textDirection:
+              _showSearchForm ? TextDirection.ltr : Directionality.of(context),
+          children: [
+            SizedBox(width: 410, child: listPane),
+            const VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: Color(0xFFD9DEE1),
             ),
-          ),
-        ]),
+            Expanded(
+              child: _DesktopContentPane(
+                navigatorKey: _desktopContentNavigatorKey,
+                child: _showSearchForm
+                    ? _advancedSearchPane()
+                    : _showMyListings
+                        ? MyListingsScreen(
+                            token: widget.token,
+                            embedded: true,
+                            onClose: () =>
+                                setState(() => _showMyListings = false),
+                          )
+                        : _showPostForm
+                            ? PostListingScreen(
+                                token: widget.token,
+                                me: widget.me,
+                                embedded: true,
+                                onClose: () =>
+                                    setState(() => _showPostForm = false),
+                                onPublished: () async {
+                                  setState(() => _showPostForm = false);
+                                  await _load();
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('המודעה פורסמה בהצלחה'),
+                                      ),
+                                    );
+                                  }
+                                },
+                              )
+                            : _selectedItem == null
+                                ? const _DesktopListingWelcome()
+                                : ListingDetailScreen(
+                                    key: ValueKey(_selectedItem!['id']),
+                                    item: _selectedItem!,
+                                    token: widget.token,
+                                    me: widget.me,
+                                    socket: widget.socket,
+                                    embedded: true,
+                                    onClose: () =>
+                                        setState(() => _selectedItem = null),
+                                    onUpdated: _load,
+                                    onConversationStarted:
+                                        widget.onConversationStarted,
+                                  ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -15749,346 +15471,675 @@ class _ListingsScreenState extends State<ListingsScreen> {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(9),
             border: Border.all(
-                color: selected ? kPrimary : const Color(0xFFB8D4E8)),
+              color: selected ? kPrimary : const Color(0xFFB8D4E8),
+            ),
           ),
-          child: Text(label,
-              style: TextStyle(
-                color: selected ? Colors.white : kPrimary,
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-              )),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.white : kPrimary,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
         ),
       ),
     );
   }
+}
 
-  Widget _advancedDetailField(String category, (String, String, String) field,
-      Map<String, TextEditingController> controllers,
-      [VoidCallback? refresh]) {
-    const options = <String, List<(String, String)>>{
-      'deal_type': [('rent', 'השכרה'), ('sale', 'מכירה')],
-      'property_type': [
-        ('apartment', 'דירה'),
-        ('house', 'בית פרטי'),
-        ('garden', 'דירת גן'),
-        ('penthouse', 'פנטהאוז'),
-        ('duplex', 'דופלקס'),
-        ('studio', 'יחידת דיור / סטודיו'),
-        ('other', 'אחר')
-      ],
-      'transmission': [
-        ('automatic', 'אוטומטית'),
-        ('manual', 'ידנית'),
-        ('robotic', 'רובוטית'),
-        ('other', 'אחרת')
-      ],
-      'furniture': [
-        ('none', 'ללא ריהוט'),
-        ('partial', 'ריהוט חלקי'),
-        ('full', 'מרוהט')
-      ],
-    };
-    final controller =
-        controllers.putIfAbsent(field.$1, () => TextEditingController());
-    final values = options[field.$1];
-    if (values != null) {
-      final current = values.any((option) => option.$1 == controller.text)
-          ? controller.text
-          : null;
-      return DropdownButtonFormField<String>(
-        initialValue: current,
-        decoration: InputDecoration(
-            labelText: field.$2,
-            isDense: true,
-            border: const OutlineInputBorder()),
-        items: [
-          const DropdownMenuItem(value: '', child: Text('הכול')),
-          for (final option in values)
-            DropdownMenuItem(value: option.$1, child: Text(option.$2)),
-        ],
-        onChanged: (value) => controller.text = value ?? '',
-      );
+Widget? _listingSearchClearIcon(
+  String name,
+  String label,
+  bool hasValue,
+  VoidCallback onClear,
+) =>
+    hasValue
+        ? IconButton(
+            key: ValueKey('listing-search-clear-$name'),
+            tooltip: 'נקה $label',
+            icon: const Icon(Icons.close, size: 18),
+            onPressed: onClear,
+          )
+        : null;
+
+Widget _advancedListingDetailField(
+  String category,
+  (String, String, String) field,
+  Map<String, TextEditingController> controllers, [
+  VoidCallback? refresh,
+]) {
+  const options = <String, List<(String, String)>>{
+    'deal_type': [('rent', 'השכרה'), ('sale', 'מכירה')],
+    'property_type': [
+      ('apartment', 'דירה'),
+      ('house', 'בית פרטי'),
+      ('garden', 'דירת גן'),
+      ('penthouse', 'פנטהאוז'),
+      ('duplex', 'דופלקס'),
+      ('studio', 'יחידת דיור / סטודיו'),
+      ('other', 'אחר'),
+    ],
+    'transmission': [
+      ('automatic', 'אוטומטית'),
+      ('manual', 'ידנית'),
+      ('robotic', 'רובוטית'),
+      ('other', 'אחרת'),
+    ],
+    'furniture': [
+      ('none', 'ללא ריהוט'),
+      ('partial', 'ריהוט חלקי'),
+      ('full', 'מרוהט'),
+    ],
+  };
+  final controller = controllers.putIfAbsent(
+    field.$1,
+    () => TextEditingController(),
+  );
+  void changed(String _) {
+    if (category == 'רכב') {
+      if (field.$1 == 'manufacturer') controllers['model']?.clear();
+      if (field.$1 == 'manufacturer' || field.$1 == 'model') {
+        controllers['trim']?.clear();
+      }
     }
-    final currentValues = {
-      for (final entry in controllers.entries) entry.key: entry.value.text,
-    };
-    return _PopularValueField(
-      key: ValueKey(
-          '$_listingCatalogVersion:${_popularFieldStateKey(category, field.$1, currentValues)}'),
-      controller: controller,
-      label: field.$2,
-      hint: field.$3.isEmpty ? null : field.$3,
-      options: _popularValuesFor(category, field.$1, currentValues),
-      onChanged: (_) {
-        _refreshCategoryDependencies(category, field.$1, controllers);
-        refresh?.call();
+    _refreshCategoryDependencies(category, field.$1, controllers);
+    refresh?.call();
+  }
+
+  final clearIcon = _listingSearchClearIcon(
+    'detail-${field.$1}',
+    field.$2,
+    controller.text.isNotEmpty,
+    () {
+      FocusManager.instance.primaryFocus?.unfocus();
+      controller.clear();
+      changed('');
+    },
+  );
+  final values = options[field.$1];
+  if (values != null) {
+    final current = values.any((option) => option.$1 == controller.text)
+        ? controller.text
+        : null;
+    return DropdownButtonFormField<String>(
+      key: ValueKey('$category:${field.$1}'),
+      initialValue: current,
+      isExpanded: true,
+      decoration: InputDecoration(
+        labelText: field.$2,
+        isDense: true,
+        border: const OutlineInputBorder(),
+        suffixIcon: clearIcon,
+      ),
+      items: [
+        const DropdownMenuItem(value: '', child: Text('הכול')),
+        for (final option in values)
+          DropdownMenuItem(
+            value: option.$1,
+            child: Text(
+              option.$2,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+      ],
+      onChanged: (value) {
+        controller.text = value ?? '';
+        changed(value ?? '');
       },
     );
   }
+  final currentValues = {
+    for (final entry in controllers.entries) entry.key: entry.value.text,
+  };
+  final vehicleParent = category == 'רכב' &&
+          (field.$1 == 'model' || field.$1 == 'trim')
+      ? '${currentValues['manufacturer']}:${field.$1 == 'trim' ? currentValues['model'] : ''}'
+      : '';
+  return _PopularValueField(
+    key: ValueKey(
+      '$_listingCatalogVersion:${_popularFieldStateKey(category, field.$1, currentValues)}:$vehicleParent',
+    ),
+    controller: controller,
+    label: field.$2,
+    hint: field.$3.isEmpty ? null : field.$3,
+    options: _popularValuesFor(category, field.$1, currentValues),
+    onChanged: changed,
+    suffixIcon: clearIcon,
+  );
+}
 
-  void _showFilterSheet() {
-    final cityCtrl = TextEditingController(text: _cityFilter);
-    final queryCtrl = TextEditingController(text: _queryFilter);
-    final minPriceCtrl = TextEditingController(
-        text: _minPrice == null ? '' : _minPrice!.toStringAsFixed(0));
-    final maxPriceCtrl = TextEditingController(
-        text: _maxPrice == null ? '' : _maxPrice!.toStringAsFixed(0));
-    String tmpType = _typeFilter;
-    String tmpCategory = _catFilter;
-    String tmpSort = _sortFilter;
-    String tmpCondition = _conditionFilter;
-    final detailCtrls = <String, TextEditingController>{
-      for (final entry in _detailFilters.entries)
+class AdvancedListingSearchScreen extends StatefulWidget {
+  final ListingSearchFilters initialFilters;
+  final bool embedded;
+  final VoidCallback? onClose;
+  final ValueChanged<ListingSearchFilters> onApply;
+  final VoidCallback onClear;
+
+  const AdvancedListingSearchScreen({
+    super.key,
+    required this.initialFilters,
+    this.embedded = false,
+    this.onClose,
+    required this.onApply,
+    required this.onClear,
+  });
+
+  @override
+  State<AdvancedListingSearchScreen> createState() =>
+      _AdvancedListingSearchScreenState();
+}
+
+class _AdvancedListingSearchScreenState
+    extends State<AdvancedListingSearchScreen> {
+  late final TextEditingController _queryCtrl;
+  late final TextEditingController _cityCtrl;
+  late final TextEditingController _minPriceCtrl;
+  late final TextEditingController _maxPriceCtrl;
+  late final Map<String, TextEditingController> _detailCtrls;
+  late String _type;
+  late String _category;
+  late String _sort;
+  late String _condition;
+  late double _radius;
+  String? _priceError;
+  final _priceSectionKey = GlobalKey();
+
+  @override
+  void initState() {
+    super.initState();
+    final filters = widget.initialFilters;
+    _queryCtrl = TextEditingController(text: filters.query);
+    _cityCtrl = TextEditingController(text: filters.city);
+    _minPriceCtrl = TextEditingController(text: _priceText(filters.minPrice));
+    _maxPriceCtrl = TextEditingController(text: _priceText(filters.maxPrice));
+    _detailCtrls = {
+      for (final entry in filters.details.entries)
         entry.key: TextEditingController(text: entry.value),
     };
-    double tmpRadius = _radius;
-    showModalBottomSheet(
-        context: context,
-        isScrollControlled: true,
-        builder: (ctx) {
-          return StatefulBuilder(
-              builder: (ctx, setS) => Padding(
-                    padding: EdgeInsets.only(
-                        bottom: MediaQuery.of(ctx).viewInsets.bottom,
-                        left: 20,
-                        right: 20,
-                        top: 20),
-                    child: SingleChildScrollView(
-                      child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('חיפוש מתקדם',
-                                style: TextStyle(
-                                    fontSize: 18, fontWeight: FontWeight.bold)),
-                            const SizedBox(height: 16),
-                            TextField(
-                              controller: queryCtrl,
-                              textDirection: TextDirection.rtl,
-                              decoration: const InputDecoration(
-                                  labelText: 'מה מחפשים?',
-                                  hintText: 'שם או תיאור המוצר',
-                                  prefixIcon: Icon(Icons.search)),
-                            ),
-                            const SizedBox(height: 12),
-                            DropdownButtonFormField<String>(
-                              initialValue: tmpType,
-                              decoration: const InputDecoration(
-                                  labelText: 'סוג מודעה',
-                                  prefixIcon: Icon(Icons.sell_outlined)),
-                              items: const [
-                                DropdownMenuItem(
-                                    value: 'all', child: Text('הכול')),
-                                DropdownMenuItem(
-                                    value: 'free',
-                                    child: Text('למסירה ללא תשלום')),
-                                DropdownMenuItem(
-                                    value: 'sale', child: Text('למכירה')),
-                              ],
-                              onChanged: (value) =>
-                                  setS(() => tmpType = value ?? 'all'),
-                            ),
-                            const SizedBox(height: 12),
-                            DropdownButtonFormField<String>(
-                              initialValue: tmpCategory,
-                              decoration: const InputDecoration(
-                                  labelText: 'קטגוריה',
-                                  prefixIcon: Icon(Icons.category_outlined)),
-                              items: _listingCategories
-                                  .map((category) => DropdownMenuItem(
-                                      value: category, child: Text(category)))
-                                  .toList(),
-                              onChanged: (value) => setS(() {
-                                tmpCategory = value ?? 'הכל';
-                                for (final controller in detailCtrls.values) {
-                                  controller.clear();
-                                }
-                              }),
-                            ),
-                            if (tmpCategory != 'הכל') ...[
-                              const SizedBox(height: 12),
-                              Container(
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFF4F9FD),
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: kBorder),
-                                ),
-                                child: Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: [
-                                    Text('סינון לפי מאפייני $tmpCategory',
-                                        style: const TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            color: kPrimary)),
-                                    const SizedBox(height: 10),
-                                    for (final field in _listingSearchFields(
-                                        tmpCategory)) ...[
-                                      _advancedDetailField(tmpCategory, field,
-                                          detailCtrls, () => setS(() {})),
-                                      const SizedBox(height: 9),
-                                    ],
-                                  ],
-                                ),
-                              ),
-                            ],
-                            const SizedBox(height: 12),
-                            Row(children: [
-                              Expanded(
-                                child: TextField(
-                                  controller: minPriceCtrl,
-                                  keyboardType: TextInputType.number,
-                                  decoration: const InputDecoration(
-                                      labelText: 'מחיר מינימום',
-                                      prefixText: '₪ '),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: TextField(
-                                  controller: maxPriceCtrl,
-                                  keyboardType: TextInputType.number,
-                                  decoration: const InputDecoration(
-                                      labelText: 'מחיר מקסימום',
-                                      prefixText: '₪ '),
-                                ),
-                              ),
-                            ]),
-                            const SizedBox(height: 12),
-                            _LocationAutocompleteField(
-                              controller: cityCtrl,
-                              label: 'עיר או אזור',
-                              hint: 'התחל להקליד ובחר מהרשימה',
-                            ),
-                            if (tmpCategory != 'רכב' &&
-                                tmpCategory != 'נדל״ן') ...[
-                              const SizedBox(height: 12),
-                              DropdownButtonFormField<String>(
-                                initialValue: tmpCondition,
-                                decoration: const InputDecoration(
-                                    labelText: 'מצב המוצר',
-                                    prefixIcon: Icon(Icons.verified_outlined)),
-                                items: const [
-                                  DropdownMenuItem(
-                                      value: 'all', child: Text('כל המצבים')),
-                                  DropdownMenuItem(
-                                      value: 'new', child: Text('חדש')),
-                                  DropdownMenuItem(
-                                      value: 'like_new',
-                                      child: Text('כמו חדש')),
-                                  DropdownMenuItem(
-                                      value: 'good', child: Text('מצב טוב')),
-                                  DropdownMenuItem(
-                                      value: 'fair', child: Text('מצב סביר')),
-                                  DropdownMenuItem(
-                                      value: 'for_parts',
-                                      child: Text('לתיקון / לחלקים')),
-                                ],
-                                onChanged: (value) =>
-                                    setS(() => tmpCondition = value ?? 'all'),
-                              ),
-                            ],
-                            const SizedBox(height: 16),
-                            Text(
-                                'רדיוס: ${tmpRadius == 0 ? "ללא" : "${tmpRadius.toInt()} ק״מ"}'),
-                            Slider(
-                              value: tmpRadius,
-                              min: 0,
-                              max: 100,
-                              divisions: 10,
-                              activeColor: kPrimary,
-                              onChanged: (v) => setS(() => tmpRadius = v),
-                            ),
-                            const SizedBox(height: 8),
-                            DropdownButtonFormField<String>(
-                              initialValue: tmpSort,
-                              decoration: const InputDecoration(
-                                  labelText: 'מיון תוצאות',
-                                  prefixIcon: Icon(Icons.sort)),
-                              items: const [
-                                DropdownMenuItem(
-                                    value: 'newest',
-                                    child: Text('החדשות ביותר')),
-                                DropdownMenuItem(
-                                    value: 'price_asc',
-                                    child: Text('מחיר: מהנמוך לגבוה')),
-                                DropdownMenuItem(
-                                    value: 'price_desc',
-                                    child: Text('מחיר: מהגבוה לנמוך')),
-                              ],
-                              onChanged: (value) =>
-                                  setS(() => tmpSort = value ?? 'newest'),
-                            ),
-                            const SizedBox(height: 12),
-                            Row(children: [
-                              Expanded(
-                                  child: OutlinedButton(
-                                onPressed: () {
-                                  setState(() {
-                                    _cityFilter = '';
-                                    _queryFilter = '';
-                                    _searchCtrl.clear();
-                                    _typeFilter = 'all';
-                                    _catFilter = 'הכל';
-                                    _minPrice = null;
-                                    _maxPrice = null;
-                                    _sortFilter = 'newest';
-                                    _conditionFilter = 'all';
-                                    _detailFilters = {};
-                                    _radius = 0;
-                                  });
-                                  Navigator.pop(ctx);
-                                  _load();
-                                },
-                                child: const Text('נקה'),
-                              )),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                  child: ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                    backgroundColor: kPrimary),
-                                onPressed: () {
-                                  setState(() {
-                                    _cityFilter = cityCtrl.text.trim();
-                                    _queryFilter = queryCtrl.text.trim();
-                                    _searchCtrl.text = _queryFilter;
-                                    _typeFilter = tmpType;
-                                    _catFilter = tmpCategory;
-                                    _minPrice = double.tryParse(
-                                        minPriceCtrl.text.trim());
-                                    _maxPrice = double.tryParse(
-                                        maxPriceCtrl.text.trim());
-                                    _sortFilter = tmpSort;
-                                    _conditionFilter = tmpCondition;
-                                    _detailFilters = tmpCategory == 'הכל'
-                                        ? {}
-                                        : {
-                                            for (final field
-                                                in _listingSearchFields(
-                                                    tmpCategory))
-                                              if ((detailCtrls[field.$1]
-                                                          ?.text
-                                                          .trim() ??
-                                                      '')
-                                                  .isNotEmpty)
-                                                field.$1: detailCtrls[field.$1]!
-                                                    .text
-                                                    .trim(),
-                                          };
-                                    _radius = tmpRadius;
-                                  });
-                                  Navigator.pop(ctx);
-                                  _load();
-                                },
-                                child: const Text('החל',
-                                    style: TextStyle(color: Colors.white)),
-                              )),
-                            ]),
-                            const SizedBox(height: 16),
-                          ]),
+    _type = filters.type;
+    _category = filters.category;
+    _sort = filters.sort;
+    _condition = filters.condition;
+    _radius = filters.radius.clamp(0, 100).toDouble();
+    for (final controller in [
+      _queryCtrl,
+      _cityCtrl,
+      _minPriceCtrl,
+      _maxPriceCtrl,
+    ]) {
+      controller.addListener(_refreshTextFields);
+    }
+  }
+
+  void _refreshTextFields() {
+    if (mounted) setState(() {});
+  }
+
+  Widget? _textClearIcon(
+    String name,
+    String label,
+    TextEditingController controller,
+  ) =>
+      _listingSearchClearIcon(name, label, controller.text.isNotEmpty, () {
+        FocusScope.of(context).unfocus();
+        controller.clear();
+        if (name == 'min-price' || name == 'max-price') {
+          setState(() => _priceError = null);
+        }
+      });
+
+  String _priceText(double? price) => price == null
+      ? ''
+      : price == price.roundToDouble()
+          ? price.toStringAsFixed(0)
+          : price.toString();
+
+  @override
+  void dispose() {
+    _queryCtrl.dispose();
+    _cityCtrl.dispose();
+    _minPriceCtrl.dispose();
+    _maxPriceCtrl.dispose();
+    for (final controller in _detailCtrls.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  void _changeCategory(String? value) {
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _category = value ?? 'הכל';
+      for (final controller in _detailCtrls.values) {
+        controller.clear();
+      }
+      if (_category == 'רכב' || _category == 'נדל״ן') _condition = 'all';
+    });
+  }
+
+  void _clear() {
+    FocusScope.of(context).unfocus();
+    _resetDraft();
+    widget.onClear();
+  }
+
+  void _resetDraft() {
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _queryCtrl.clear();
+      _cityCtrl.clear();
+      _minPriceCtrl.clear();
+      _maxPriceCtrl.clear();
+      for (final controller in _detailCtrls.values) {
+        controller.clear();
+      }
+      _type = 'all';
+      _category = 'הכל';
+      _sort = 'newest';
+      _condition = 'all';
+      _radius = 0;
+      _priceError = null;
+    });
+  }
+
+  void _apply() {
+    final minText = _minPriceCtrl.text.trim().replaceAll(RegExp(r'[\s,]'), '');
+    final maxText = _maxPriceCtrl.text.trim().replaceAll(RegExp(r'[\s,]'), '');
+    final min = minText.isEmpty ? null : double.tryParse(minText);
+    final max = maxText.isEmpty ? null : double.tryParse(maxText);
+    final numberPattern = RegExp(r'^[+\-]?\d+(?:\.\d+)?$');
+    String? error;
+    if ((minText.isNotEmpty &&
+            (min == null ||
+                !numberPattern.hasMatch(minText) ||
+                !min.isFinite)) ||
+        (maxText.isNotEmpty &&
+            (max == null ||
+                !numberPattern.hasMatch(maxText) ||
+                !max.isFinite))) {
+      error = 'יש להזין מחיר תקין';
+    } else if ((min != null && min < 0) || (max != null && max < 0)) {
+      error = 'המחיר חייב להיות אפס או מספר חיובי';
+    } else if (min != null && max != null && min > max) {
+      error = 'מחיר המינימום גדול ממחיר המקסימום';
+    }
+    setState(() => _priceError = error);
+    if (error != null) {
+      final priceContext = _priceSectionKey.currentContext;
+      if (priceContext != null) {
+        Scrollable.ensureVisible(
+          priceContext,
+          alignment: 0.1,
+          duration: const Duration(milliseconds: 200),
+        );
+      }
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    widget.onApply(
+      ListingSearchFilters(
+        type: _type,
+        category: _category,
+        city: _cityCtrl.text.trim(),
+        query: _queryCtrl.text.trim(),
+        minPrice: min,
+        maxPrice: max,
+        sort: _sort,
+        condition: _condition,
+        radius: _radius,
+        details: {
+          for (final field in _listingSearchFields(_category))
+            if ((_detailCtrls[field.$1]?.text.trim() ?? '').isNotEmpty)
+              field.$1: _detailCtrls[field.$1]!.text.trim(),
+        },
+      ),
+    );
+  }
+
+  Widget _select(
+    String name,
+    String value,
+    String label,
+    List<(String, String)> options,
+    ValueChanged<String?> onChanged, {
+    IconData? icon,
+  }) {
+    final resetValue = options.first.$1;
+    return KeyedSubtree(
+      key: ValueKey('listing-search-$name'),
+      child: DropdownButtonFormField<String>(
+        key: ValueKey(name),
+        initialValue:
+            options.any((option) => option.$1 == value) ? value : null,
+        isExpanded: true,
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(),
+          prefixIcon: icon == null ? null : Icon(icon, color: kPrimary),
+          suffixIcon: _listingSearchClearIcon(
+            name,
+            label,
+            value != resetValue,
+            () {
+              FocusScope.of(context).unfocus();
+              onChanged(resetValue);
+            },
+          ),
+        ),
+        items: [
+          for (final option in options)
+            DropdownMenuItem(value: option.$1, child: Text(option.$2)),
+        ],
+        onChanged: onChanged,
+      ),
+    );
+  }
+
+  Widget _fieldRows(List<Widget> fields) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var i = 0; i < fields.length; i++) ...[
+            if (i > 0) const SizedBox(height: 12),
+            fields[i],
+          ],
+        ],
+      );
+
+  Widget _section(
+    String title,
+    IconData icon,
+    List<Widget> children, {
+    Key? key,
+  }) =>
+      Container(
+        key: key,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF4F9FD),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: kBorder),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: kPrimary, size: 21),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: kPrimary,
                     ),
-                  ));
-        });
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            ...children,
+          ],
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final fields = _listingSearchFields(_category);
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: kPrimary,
+        title: const Text('חיפוש מתקדם', style: TextStyle(color: Colors.white)),
+        leading: BackButton(
+          color: Colors.white,
+          onPressed: widget.onClose ?? () => Navigator.pop(context),
+        ),
+      ),
+      body: Align(
+        alignment: widget.embedded ? Alignment.topCenter : Alignment.topLeft,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _select(
+                  'category',
+                  _category,
+                  'קטגוריה',
+                  [
+                    for (final category in {'הכל', ..._listingCategories})
+                      (category, category),
+                  ],
+                  _changeCategory,
+                  icon: Icons.category_outlined,
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  key: const ValueKey('listing-search-query'),
+                  controller: _queryCtrl,
+                  textDirection: TextDirection.rtl,
+                  onSubmitted: (_) => _apply(),
+                  decoration: InputDecoration(
+                    labelText: 'מה מחפשים?',
+                    hintText: 'שם, תיאור או מילת חיפוש',
+                    prefixIcon: const Icon(Icons.search, color: kPrimary),
+                    border: const OutlineInputBorder(),
+                    suffixIcon: _textClearIcon('query', 'חיפוש', _queryCtrl),
+                  ),
+                ),
+                if (fields.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  _section(
+                    'מאפייני $_category',
+                    _category == 'רכב'
+                        ? Icons.directions_car_outlined
+                        : _category == 'נדל״ן'
+                            ? Icons.home_outlined
+                            : Icons.tune,
+                    [
+                      _fieldRows([
+                        for (final field in fields)
+                          KeyedSubtree(
+                            key: ValueKey('listing-search-detail-${field.$1}'),
+                            child: _advancedListingDetailField(
+                              _category,
+                              field,
+                              _detailCtrls,
+                              () => setState(() {}),
+                            ),
+                          ),
+                      ]),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 16),
+                _section(
+                    'מחיר וסוג מודעה',
+                    Icons.sell_outlined,
+                    [
+                      _select(
+                          'type',
+                          _type,
+                          'סוג מודעה',
+                          const [
+                            ('all', 'הכול'),
+                            ('free', 'למסירה ללא תשלום'),
+                            ('sale', 'למכירה'),
+                          ],
+                          (value) => setState(() => _type = value ?? 'all')),
+                      const SizedBox(height: 12),
+                      _fieldRows([
+                        TextField(
+                          key: const ValueKey('listing-search-min-price'),
+                          controller: _minPriceCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          decoration: InputDecoration(
+                            labelText: 'מחיר מינימום',
+                            prefixText: '₪ ',
+                            border: const OutlineInputBorder(),
+                            suffixIcon: _textClearIcon(
+                              'min-price',
+                              'מחיר מינימום',
+                              _minPriceCtrl,
+                            ),
+                          ),
+                        ),
+                        TextField(
+                          key: const ValueKey('listing-search-max-price'),
+                          controller: _maxPriceCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          decoration: InputDecoration(
+                            labelText: 'מחיר מקסימום',
+                            prefixText: '₪ ',
+                            border: const OutlineInputBorder(),
+                            suffixIcon: _textClearIcon(
+                              'max-price',
+                              'מחיר מקסימום',
+                              _maxPriceCtrl,
+                            ),
+                          ),
+                        ),
+                      ]),
+                      if (_priceError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          _priceError!,
+                          style: const TextStyle(color: Colors.red),
+                        ),
+                      ],
+                    ],
+                    key: _priceSectionKey),
+                const SizedBox(height: 16),
+                _section('מיקום', Icons.location_on_outlined, [
+                  KeyedSubtree(
+                    key: const ValueKey('listing-search-city'),
+                    child: _LocationAutocompleteField(
+                      controller: _cityCtrl,
+                      label: 'עיר או אזור',
+                      hint: 'התחל להקליד ובחר מהרשימה',
+                      suffixIcon: _textClearIcon(
+                        'city',
+                        'עיר או אזור',
+                        _cityCtrl,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'רדיוס: ${_radius == 0 ? "ללא הגבלה" : "${_radius.toInt()} ק״מ"}',
+                        ),
+                      ),
+                      if (_radius > 0)
+                        _listingSearchClearIcon(
+                          'radius',
+                          'רדיוס',
+                          true,
+                          () => setState(() => _radius = 0),
+                        )!,
+                    ],
+                  ),
+                  Slider(
+                    value: _radius,
+                    min: 0,
+                    max: 100,
+                    divisions: 10,
+                    label:
+                        _radius == 0 ? 'ללא הגבלה' : '${_radius.toInt()} ק״מ',
+                    activeColor: kPrimary,
+                    onChanged: (value) => setState(() => _radius = value),
+                  ),
+                  const Text(
+                    'הרדיוס מחושב מהמיקום השמור בפרופיל',
+                    style: TextStyle(fontSize: 12, color: kSubtext),
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                _fieldRows([
+                  if (_category != 'רכב' && _category != 'נדל״ן')
+                    _select(
+                      'condition',
+                      _condition,
+                      'מצב המוצר',
+                      const [
+                        ('all', 'כל המצבים'),
+                        ('new', 'חדש'),
+                        ('like_new', 'כמו חדש'),
+                        ('good', 'מצב טוב'),
+                        ('fair', 'מצב סביר'),
+                        ('for_parts', 'לתיקון / לחלקים'),
+                      ],
+                      (value) => setState(() => _condition = value ?? 'all'),
+                      icon: Icons.verified_outlined,
+                    ),
+                  _select(
+                    'sort',
+                    _sort,
+                    'מיון תוצאות',
+                    const [
+                      ('newest', 'החדשות ביותר'),
+                      ('price_asc', 'מחיר: מהנמוך לגבוה'),
+                      ('price_desc', 'מחיר: מהגבוה לנמוך'),
+                    ],
+                    (value) => setState(() => _sort = value ?? 'newest'),
+                    icon: Icons.sort,
+                  ),
+                ]),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        ),
+      ),
+      bottomNavigationBar: SafeArea(
+        child: Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            border: Border(top: BorderSide(color: kBorder)),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          child: Align(
+            heightFactor: 1,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 720),
+              child: Row(
+                children: [
+                  OutlinedButton(
+                    onPressed: _clear,
+                    child: const Text('נקה מסננים'),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _apply,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: kPrimary,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      icon: const Icon(Icons.search),
+                      label: const Text('חפש מודעות'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -16342,18 +16393,21 @@ class _ListingContactPreferences extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           color: const Color(0xFFF4F9FD),
           border: Border.all(color: kBorder),
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(18),
         ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           const Row(children: [
             Icon(Icons.contact_phone_outlined, color: kPrimary),
             SizedBox(width: 8),
-            Text('איך נוח ליצור איתך קשר?',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            Expanded(
+              child: Text('איך נוח ליצור איתך קשר?',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
           ]),
           const SizedBox(height: 4),
           Text('אפשר לבחור דרך אחת או לשלב כמה דרכים',
@@ -16824,6 +16878,15 @@ class PostListingScreen extends StatefulWidget {
 }
 
 class _PostListingScreenState extends State<PostListingScreen> {
+  late final ListingFormDraftStore? _draftStore =
+      switch (listingDraftAccountId(widget.me, widget.token)) {
+    final String id when id.isNotEmpty => ListingFormDraftStore(id),
+    _ => null,
+  };
+  Map<String, dynamic>? _availableDraft;
+  DateTime? _draftSavedAt;
+  String? _savedDraftFingerprint;
+  bool _loadingDraft = true, _savingDraft = false, _restoringDraft = false;
   final _titleCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
   final _priceCtrl = TextEditingController();
@@ -16898,6 +16961,278 @@ class _PostListingScreenState extends State<PostListingScreen> {
   bool _titleManuallyEdited = false;
   bool _descriptionManuallyEdited = false;
 
+  Map<String, TextEditingController> get _draftControllers => {
+        'title': _titleCtrl,
+        'description': _descCtrl,
+        'price': _priceCtrl,
+        'quantity': _quantityCtrl,
+        'pickup': _pickupCtrl,
+        'city': _cityCtrl,
+        'contact_hours': _contactHoursCtrl,
+        'plate': _plateCtrl,
+        'vehicle_manufacturer': _vehicleManufacturerCtrl,
+        'vehicle_model': _vehicleModelCtrl,
+        'vehicle_year': _vehicleYearCtrl,
+        'vehicle_mileage': _vehicleMileageCtrl,
+        'vehicle_hand': _vehicleHandCtrl,
+        'vehicle_fuel': _vehicleFuelCtrl,
+        'vehicle_color': _vehicleColorCtrl,
+        'vehicle_test': _vehicleTestCtrl,
+        for (final entry in _vehicleExtraCtrls.entries)
+          'vehicle_extra_${entry.key}': entry.value,
+        'property_street': _propertyStreetCtrl,
+        'property_rooms': _propertyRoomsCtrl,
+        'property_floor': _propertyFloorCtrl,
+        'property_total_floors': _propertyTotalFloorsCtrl,
+        'property_area': _propertyAreaCtrl,
+        'property_entry': _propertyEntryCtrl,
+        'property_arnona': _propertyArnonaCtrl,
+        'property_vaad': _propertyVaadCtrl,
+        for (final entry in _categoryDetailCtrls.entries)
+          'category_${entry.key}': entry.value,
+      };
+
+  Map<String, dynamic> _draftSnapshot() => {
+        'version': 1,
+        'category': _category,
+        'fields': {
+          for (final entry in _draftControllers.entries)
+            entry.key: entry.value.text,
+        },
+        'condition': _condition,
+        'delivery_method': _deliveryMethod,
+        'expiry_days': _expiryDays,
+        'negotiable': _negotiable,
+        'contact_in_app': _contactInApp,
+        'contact_email': _contactEmail,
+        'contact_phone': _contactPhone,
+        'vehicle_transmission': _vehicleTransmission,
+        'property_deal_type': _propertyDealType,
+        'property_type': _propertyType,
+        'property_furniture': _propertyFurniture,
+        'property_parking': _propertyParking,
+        'property_elevator': _propertyElevator,
+        'property_mamad': _propertyMamad,
+        'property_balcony': _propertyBalcony,
+        'property_accessible': _propertyAccessible,
+        'property_storage': _propertyStorage,
+        'property_air_conditioning': _propertyAirConditioning,
+        'property_pets': _propertyPets,
+        'title_manually_edited': _titleManuallyEdited,
+        'description_manually_edited': _descriptionManuallyEdited,
+        'images': [
+          for (var i = 0; i < _imageUrls.length; i++)
+            _imageOutcomes[i] == _FileUploadOutcome.approved
+                ? _imageUrls[i]
+                : _imageOriginalUrls[i],
+        ],
+        'video_url': _listingVideo.url,
+      };
+
+  void _draftFieldChanged() {
+    if (mounted && !_restoringDraft) setState(() {});
+  }
+
+  Future<void> _loadDraft() async {
+    try {
+      final draft = await _draftStore?.load();
+      if (mounted) setState(() => _availableDraft = draft);
+    } catch (_) {
+      // Opening the editor remains possible when device storage is unavailable.
+    } finally {
+      if (mounted) setState(() => _loadingDraft = false);
+    }
+  }
+
+  String get _draftStatus {
+    if (_savingDraft) return 'שומר טיוטה במכשיר…';
+    if (_saving) return 'שומר ומפרסם את המודעה…';
+    if (_draftSavedAt == null) return 'אפשר לשמור טיוטה בכל שלב ולהמשיך אחר כך';
+    if (_savedDraftFingerprint != jsonEncode(_draftSnapshot())) {
+      return 'יש שינויים חדשים — אפשר לשמור אותם בטיוטה';
+    }
+    final time = _draftSavedAt!;
+    return 'טיוטה נשמרה במכשיר ב־${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _saveDraft() async {
+    if (_saving || _savingDraft || _loadingDraft) return;
+    final store = _draftStore;
+    if (store == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content:
+              Text('לא ניתן לזהות את החשבון לשמירת טיוטה. יש להתחבר מחדש')));
+      return;
+    }
+    final savedAt = DateTime.now();
+    final revision = savedAt.microsecondsSinceEpoch.toString();
+    final snapshot = _draftSnapshot();
+    final fingerprint = jsonEncode(snapshot);
+    final draft = <String, dynamic>{
+      ...snapshot,
+      'revision': revision,
+      'saved_at': savedAt.toIso8601String(),
+    };
+    final pendingImages = <int, Future<ListingImageAttachment?>>{
+      for (var i = 0; i < _imageUploadTasks.length; i++)
+        if (_imageUploadTasks[i] != null && !_imageUploadTasks[i]!.isCompleted)
+          i: _imageUploadTasks[i]!.future,
+    };
+    final pendingVideo = _listingVideo.pendingUpload;
+    setState(() => _savingDraft = true);
+    try {
+      await store.save(draft);
+      if (pendingImages.isNotEmpty) _retainInitialImageUpload = true;
+      // Only update this saved revision when the uploads already in flight finish.
+      if (pendingImages.isNotEmpty || pendingVideo != null) {
+        unawaited(() async {
+          try {
+            final images = List<String?>.from(snapshot['images'] as List);
+            await Future.wait([
+              for (final entry in pendingImages.entries)
+                entry.value.then((image) {
+                  if (image != null) images[entry.key] = image.url;
+                }),
+            ]);
+            final video = await pendingVideo;
+            await store.updateMedia(revision, images,
+                videoUrl: video?.url, updateVideo: video != null);
+          } catch (_) {
+            // The saved text and already uploaded media remain available.
+          }
+        }());
+      }
+      if (!mounted) return;
+      setState(() {
+        _draftSavedAt = savedAt;
+        _savedDraftFingerprint = fingerprint;
+        _availableDraft = null;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('הטיוטה נשמרה במכשיר. אפשר להמשיך מאוחר יותר')));
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('שמירת הטיוטה נכשלה. נסה שוב')));
+      }
+    } finally {
+      if (mounted) setState(() => _savingDraft = false);
+    }
+  }
+
+  Future<void> _restoreDraft() async {
+    if (_availableDraft == null || _loadingDraft || _saving || _savingDraft) {
+      return;
+    }
+    setState(() => _loadingDraft = true);
+    Map<String, dynamic>? loadedDraft;
+    try {
+      loadedDraft = await _draftStore?.load();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('טעינת הטיוטה נכשלה. נסה שוב')));
+      }
+    } finally {
+      if (mounted) setState(() => _loadingDraft = false);
+    }
+    final draft = loadedDraft;
+    if (!mounted || draft == null) return;
+    _restoringDraft = true;
+    try {
+      setState(() {
+        final category = draft['category']?.toString();
+        if (_listingCategories.skip(1).contains(category)) {
+          _category = category!;
+        }
+        final fields = draft['fields'];
+        if (fields is Map) {
+          for (final entry in _draftControllers.entries) {
+            if (fields[entry.key] is String) {
+              entry.value.text = fields[entry.key];
+            }
+          }
+        }
+        _condition = draft['condition'] as String? ?? 'good';
+        _deliveryMethod = draft['delivery_method'] as String? ?? 'pickup';
+        _expiryDays = draft['expiry_days'] as int? ?? 30;
+        _negotiable = draft['negotiable'] == true;
+        _contactInApp = draft['contact_in_app'] != false;
+        _contactEmail = draft['contact_email'] == true;
+        _contactPhone = draft['contact_phone'] == true;
+        _vehicleTransmission =
+            draft['vehicle_transmission'] as String? ?? 'automatic';
+        _propertyDealType = draft['property_deal_type'] as String? ?? 'rent';
+        _propertyType = draft['property_type'] as String? ?? 'apartment';
+        _propertyFurniture = draft['property_furniture'] as String? ?? 'none';
+        _propertyParking = draft['property_parking'] == true;
+        _propertyElevator = draft['property_elevator'] == true;
+        _propertyMamad = draft['property_mamad'] == true;
+        _propertyBalcony = draft['property_balcony'] == true;
+        _propertyAccessible = draft['property_accessible'] == true;
+        _propertyStorage = draft['property_storage'] == true;
+        _propertyAirConditioning = draft['property_air_conditioning'] == true;
+        _propertyPets = draft['property_pets'] == true;
+        _titleManuallyEdited = draft['title_manually_edited'] == true;
+        _descriptionManuallyEdited =
+            draft['description_manually_edited'] == true;
+        _mirroredTitle = _titleCtrl.text.trim();
+        final images = draft['images'];
+        if (images is List) {
+          for (var i = 0; i < _imageUrls.length; i++) {
+            if (_uploadingSlot[i]) continue;
+            final image = i < images.length ? images[i] : null;
+            _imageUrls[i] = image is String && image.isNotEmpty ? image : null;
+            _imageOutcomes[i] =
+                _imageUrls[i] != null ? _FileUploadOutcome.approved : null;
+            _imageUploadTasks[i] = null;
+            _imageOriginalUrls[i] = _imageUrls[i];
+            _imageReasons[i] = null;
+          }
+        }
+        if (!_listingVideo.uploading) {
+          _listingVideo.load(draft['video_url'] as String?);
+        }
+        _draftSavedAt = DateTime.tryParse(draft['saved_at']?.toString() ?? '');
+        _savedDraftFingerprint = jsonEncode(_draftSnapshot());
+        _availableDraft = null;
+      });
+    } finally {
+      _restoringDraft = false;
+    }
+  }
+
+  Widget _draftBanner() => Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+            color: const Color(0xFFE8F4FD),
+            border: Border.all(color: kBorder),
+            borderRadius: BorderRadius.circular(14)),
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          const Text('מחכה לך טיוטה שמורה',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const SizedBox(height: 4),
+          const Text(
+              'הטיוטה נשמרה בחשבון שלך במכשיר הזה. אפשר להמשיך מאותה נקודה.',
+              style: TextStyle(color: kSubtext, fontSize: 13)),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+              key: const ValueKey('listing-restore-draft'),
+              onPressed: _saving ||
+                      _savingDraft ||
+                      _loadingDraft ||
+                      _uploadingSlot.any((uploading) => uploading) ||
+                      _listingVideo.uploading ||
+                      _preparingVideo
+                  ? null
+                  : _restoreDraft,
+              icon: const Icon(Icons.restore),
+              label: const Text('המשך מהטיוטה')),
+        ]),
+      );
+
   Map<String, String> _categoryDetailsPayload() => {
         for (final field in _detailFieldsForCategory(_category))
           if ((_categoryDetailCtrls[field.$1]?.text.trim() ?? '').isNotEmpty)
@@ -16908,11 +17243,11 @@ class _PostListingScreenState extends State<PostListingScreen> {
     final fields = _detailFieldsForCategory(_category);
     if (fields.isEmpty) return const SizedBox.shrink();
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: const Color(0xFFF4F9FD),
         border: Border.all(color: kBorder),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(18),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Text('מאפייני $_category',
@@ -16920,16 +17255,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
         const SizedBox(height: 4),
         const Text('מילוי מדויק יעזור לקונים למצוא ולהבין את המוצר',
             style: TextStyle(fontSize: 12, color: kSubtext)),
-        const SizedBox(height: 10),
-        for (var index = 0; index < fields.length; index += 2) ...[
-          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Expanded(child: _categoryDetailField(fields[index])),
-            if (index + 1 < fields.length) ...[
-              const SizedBox(width: 10),
-              Expanded(child: _categoryDetailField(fields[index + 1])),
-            ],
-          ]),
-          if (index + 2 < fields.length) const SizedBox(height: 10),
+        const SizedBox(height: 12),
+        for (var index = 0; index < fields.length; index++) ...[
+          _categoryDetailField(fields[index]),
+          if (index + 1 < fields.length) const SizedBox(height: 12),
         ],
       ]),
     );
@@ -16976,6 +17305,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
       };
 
   void _updateGeneratedVehicleText() {
+    if (_restoringDraft) return;
     if (_category != 'רכב') return;
     final generated = _generatedVehicleListingText(_vehicleTextValues());
     final mayReplaceTitle = !_titleManuallyEdited;
@@ -17011,6 +17341,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
   }
 
   void _updateGeneratedCategoryText() {
+    if (_restoringDraft) return;
     if (_category == 'רכב') {
       _updateGeneratedVehicleText();
       return;
@@ -17099,6 +17430,11 @@ class _PostListingScreenState extends State<PostListingScreen> {
     _titleCtrl.addListener(_mirrorTitleIntoDescription);
     _listenToVehicleFields();
     _listenToAllListingFields();
+    for (final controller in _draftControllers.values.toSet()) {
+      controller.addListener(_draftFieldChanged);
+    }
+    _listingVideo.addListener(_draftFieldChanged);
+    unawaited(_loadDraft());
     if (widget.initialMessageId != null) {
       WidgetsBinding.instance
           .addPostFrameCallback((_) => _addInitialMessageImage());
@@ -17124,6 +17460,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
   }
 
   void _mirrorTitleIntoDescription() {
+    if (_restoringDraft) return;
     final title = _titleCtrl.text.trim();
     final current = _descCtrl.text;
     String? updated;
@@ -17466,7 +17803,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
   }
 
   Future<void> _submit() async {
-    if (_saving || _preparingVideo) return;
+    if (_saving || _savingDraft || _preparingVideo) return;
     if (!_contactInApp && !_contactEmail && !_contactPhone && !_contactPhone) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('יש לבחור לפחות דרך אחת ליצירת קשר')));
@@ -17514,7 +17851,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
         : <Future<ListingImageAttachment?>>[];
     final pendingVideo = _listingVideo.pendingUpload;
     final savedVideoUrl = _listingVideo.url;
-    final saveVideoChange = _listingVideo.changed;
+    final saveVideoChange = _listingVideo.changed || savedVideoUrl != null;
     final pendingMedia = [
       ...pendingImages,
       if (pendingVideo != null) pendingVideo
@@ -17613,6 +17950,11 @@ class _PostListingScreenState extends State<PostListingScreen> {
           )
           .timeout(const Duration(seconds: 30));
       if (res.statusCode == 200) {
+        try {
+          await _draftStore?.remove();
+        } catch (_) {
+          // Publishing succeeded even if local storage cannot be cleared.
+        }
         final listingId = (jsonDecode(res.body) as Map)['id']?.toString();
         if (pendingMedia.isNotEmpty && listingId != null) {
           _retainInitialImageUpload = true;
@@ -17660,6 +18002,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
 
   @override
   void dispose() {
+    for (final controller in _draftControllers.values.toSet()) {
+      controller.removeListener(_draftFieldChanged);
+    }
+    _listingVideo.removeListener(_draftFieldChanged);
     _listingVideo.dispose();
     _titleCtrl.removeListener(_mirrorTitleIntoDescription);
     _titleCtrl.dispose();
@@ -17708,238 +18054,227 @@ class _PostListingScreenState extends State<PostListingScreen> {
           onPressed: widget.onClose ?? () => Navigator.pop(context),
         ),
       ),
-      body: Align(
+      body: ListingEditorLayout(
         alignment: widget.embedded ? Alignment.topCenter : Alignment.topLeft,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 760),
-          child: Container(
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              border: Border(right: BorderSide(color: kBorder)),
-            ),
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Choose the category first so category-specific fields
-                    // are shown before the rest of the listing form.
-                    DropdownButtonFormField<String>(
-                      initialValue: _category,
-                      decoration: const InputDecoration(
-                          labelText: 'קטגוריה', border: OutlineInputBorder()),
-                      items: _listingCategories
-                          .skip(1)
-                          .map(
-                              (c) => DropdownMenuItem(value: c, child: Text(c)))
-                          .toList(),
-                      onChanged: _changeCategory,
-                    ),
-                    if (_category == 'רכב') ...[
-                      const SizedBox(height: 12),
-                      _vehicleFields(),
-                    ],
-                    if (_category == 'נדל״ן') ...[
-                      const SizedBox(height: 12),
-                      _propertyFields(),
-                    ],
-                    if (_category != 'רכב' && _category != 'נדל״ן') ...[
-                      const SizedBox(height: 12),
-                      _categorySpecificFields(),
-                    ],
-                    const SizedBox(height: 12),
-                    // Title
-                    TextField(
-                        controller: _titleCtrl,
-                        onChanged: (_) => _titleManuallyEdited = true,
-                        textDirection: TextDirection.rtl,
-                        decoration: const InputDecoration(
-                            labelText: 'כותרת המודעה *',
-                            border: OutlineInputBorder())),
-                    const SizedBox(height: 12),
-                    // Description
-                    TextField(
-                        controller: _descCtrl,
-                        onChanged: (_) => _descriptionManuallyEdited = true,
-                        textDirection: TextDirection.rtl,
-                        maxLines: 3,
-                        decoration: InputDecoration(
-                            labelText: 'תיאור מפורט *',
-                            hintText: _category == 'רכב'
-                                ? 'מצב הרכב, טיפולים, בעלות קודמת, פגמים וכל פרט חשוב'
-                                : _category == 'נדל״ן'
-                                    ? 'תיאור הנכס, הסביבה, כיווני אוויר, מצב השיפוץ וכל פרט חשוב'
-                                    : 'מצב המוצר, מידות, גיל, פגמים וכל פרט חשוב',
-                            border: const OutlineInputBorder())),
-                    const SizedBox(height: 12),
-                    TextField(
-                        controller: _priceCtrl,
-                        keyboardType: TextInputType.number,
-                        decoration: InputDecoration(
-                            labelText: _category == 'נדל״ן'
-                                ? (_propertyDealType == 'rent'
-                                    ? 'שכר דירה חודשי (₪) *'
-                                    : 'מחיר מכירה (₪) *')
-                                : 'מחיר (₪) — 0 למסירה',
-                            hintText: '0',
-                            helperText: _category == 'נדל״ן'
-                                ? 'יש להזין את המחיר המבוקש ללא פסיקים'
-                                : 'מחיר 0 יסווג את המודעה כמסירה',
-                            border: const OutlineInputBorder(),
-                            prefixText: '₪ ')),
-                    const SizedBox(height: 12),
-                    Material(
-                      type: MaterialType.transparency,
-                      child: SwitchListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text('המחיר גמיש'),
-                        subtitle: const Text('רלוונטי כאשר המחיר גדול מאפס'),
-                        value: _negotiable,
-                        onChanged: (value) =>
-                            setState(() => _negotiable = value),
-                      ),
-                    ),
-                    if (_category != 'רכב' && _category != 'נדל״ן') ...[
-                      const SizedBox(height: 12),
-                      DropdownButtonFormField<String>(
-                        initialValue: _condition,
-                        decoration: const InputDecoration(
-                            labelText: 'מצב המוצר *',
-                            prefixIcon: Icon(Icons.verified_outlined),
-                            border: OutlineInputBorder()),
-                        items: const [
-                          DropdownMenuItem(value: 'new', child: Text('חדש')),
-                          DropdownMenuItem(
-                              value: 'like_new', child: Text('כמו חדש')),
-                          DropdownMenuItem(
-                              value: 'good', child: Text('מצב טוב')),
-                          DropdownMenuItem(
-                              value: 'fair', child: Text('מצב סביר')),
-                          DropdownMenuItem(
-                              value: 'for_parts',
-                              child: Text('לתיקון / לחלקים')),
-                        ],
-                        onChanged: (value) =>
-                            setState(() => _condition = value ?? 'good'),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _quantityCtrl,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                            labelText: 'כמות',
-                            prefixIcon: Icon(Icons.numbers),
-                            border: OutlineInputBorder()),
-                      ),
-                    ],
-                    const SizedBox(height: 12),
-                    // City
-                    _LocationAutocompleteField(
-                      controller: _cityCtrl,
-                      label: 'עיר או אזור *',
-                      hint: 'התחל להקליד ובחר מהרשימה',
-                    ),
-                    TextButton.icon(
-                      onPressed: _locatingCity ? null : _loadCityFromDevice,
-                      icon: const Icon(Icons.my_location),
-                      label: Text(_locatingCity
-                          ? 'מאתר יישוב...'
-                          : 'זיהוי עיר לפי המיקום שלי'),
-                    ),
-                    const GeocodingAttribution(),
-                    if (_category != 'רכב' && _category != 'נדל״ן') ...[
-                      const SizedBox(height: 12),
-                      DropdownButtonFormField<String>(
-                        initialValue: _deliveryMethod,
-                        decoration: const InputDecoration(
-                            labelText: 'אופן קבלה *',
-                            prefixIcon: Icon(Icons.local_shipping_outlined),
-                            border: OutlineInputBorder()),
-                        items: const [
-                          DropdownMenuItem(
-                              value: 'pickup', child: Text('איסוף עצמי')),
-                          DropdownMenuItem(
-                              value: 'delivery', child: Text('משלוח')),
-                          DropdownMenuItem(
-                              value: 'both',
-                              child: Text('איסוף עצמי או משלוח')),
-                        ],
-                        onChanged: (value) =>
-                            setState(() => _deliveryMethod = value ?? 'pickup'),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _pickupCtrl,
-                        textDirection: TextDirection.rtl,
-                        maxLines: 2,
-                        decoration: const InputDecoration(
-                            labelText: 'פרטי איסוף או משלוח',
-                            hintText:
-                                'לדוגמה: איסוף בשעות הערב, קומה ללא מעלית',
-                            border: OutlineInputBorder()),
-                      ),
-                    ],
-                    const SizedBox(height: 8),
-                    _ListingContactPreferences(
-                      inApp: _contactInApp,
-                      email: _contactEmail,
-                      phone: _contactPhone,
-                      hoursController: _contactHoursCtrl,
-                      onChanged: (key, value) => setState(() {
-                        if (key == 'in_app') _contactInApp = value;
-                        if (key == 'email') _contactEmail = value;
-                        if (key == 'phone') _contactPhone = value;
-                      }),
-                    ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<int>(
-                      initialValue: _expiryDays,
-                      decoration: const InputDecoration(
-                          labelText: 'משך פרסום',
-                          prefixIcon: Icon(Icons.schedule_outlined),
-                          border: OutlineInputBorder()),
-                      items: const [
-                        DropdownMenuItem(value: 7, child: Text('7 ימים')),
-                        DropdownMenuItem(value: 14, child: Text('14 ימים')),
-                        DropdownMenuItem(value: 30, child: Text('30 ימים')),
-                        DropdownMenuItem(value: 60, child: Text('60 ימים')),
-                      ],
-                      onChanged: (value) =>
-                          setState(() => _expiryDays = value ?? 30),
-                    ),
-                    const SizedBox(height: 24),
-                    const Divider(),
-                    const SizedBox(height: 12),
-                    Text('הוספת תמונות',
-                        style: TextStyle(
-                            fontSize: 17,
-                            color: kTextDark,
-                            fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 4),
-                    Text('ניתן להוסיף עד 8 תמונות, ללא אנשים',
-                        style: TextStyle(fontSize: 13, color: kSubtext)),
-                    const SizedBox(height: 10),
-                    _dynamicImagePicker(),
-                    const SizedBox(height: 16),
-                    _listingVideoPicker(),
-                    const SizedBox(height: 24),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: kPrimary,
-                          padding: const EdgeInsets.symmetric(vertical: 14)),
-                      onPressed: _saving || _preparingVideo ? null : _submit,
-                      child: _saving
-                          ? const CircularProgressIndicator(color: Colors.white)
-                          : const Text('פרסם',
-                              style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold)),
-                    ),
-                  ]),
+        onSave: _preparingVideo ? null : _submit,
+        onSaveDraft: _saveDraft,
+        saveLabel: 'פרסם מודעה',
+        status: _draftStatus,
+        saving: _saving,
+        savingDraft: _savingDraft,
+        draftEnabled: !_loadingDraft,
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          if (_availableDraft != null) _draftBanner(),
+          const ListingEditorSection(
+            title: 'בונים מודעה ברורה',
+            subtitle: 'כל פרט במקום שלו. אפשר לשמור טיוטה ולהמשיך בקצב שלך.',
+            icon: Icons.edit_note_outlined,
+          ),
+          // Choose the category first so category-specific fields
+          // are shown before the rest of the listing form.
+          DropdownButtonFormField<String>(
+            isExpanded: true,
+            key: ValueKey('listing-_category-$_category'),
+            initialValue: _category,
+            decoration: const InputDecoration(
+                labelText: 'קטגוריה', border: OutlineInputBorder()),
+            items: _listingCategories
+                .skip(1)
+                .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                .toList(),
+            onChanged: _changeCategory,
+          ),
+          if (_category == 'רכב') ...[
+            const SizedBox(height: 12),
+            _vehicleFields(),
+          ],
+          if (_category == 'נדל״ן') ...[
+            const SizedBox(height: 12),
+            _propertyFields(),
+          ],
+          if (_category != 'רכב' && _category != 'נדל״ן') ...[
+            const SizedBox(height: 12),
+            _categorySpecificFields(),
+          ],
+          const SizedBox(height: 24),
+          const ListingEditorSection(
+            title: 'פרטי המודעה',
+            subtitle: 'כותרת, תיאור ומחיר שיעזרו להבין מה מוצע',
+            icon: Icons.description_outlined,
+          ),
+          // Title
+          TextField(
+              controller: _titleCtrl,
+              onChanged: (_) => _titleManuallyEdited = true,
+              textDirection: TextDirection.rtl,
+              decoration: const InputDecoration(
+                  labelText: 'כותרת המודעה *', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          // Description
+          TextField(
+              controller: _descCtrl,
+              onChanged: (_) => _descriptionManuallyEdited = true,
+              textDirection: TextDirection.rtl,
+              maxLines: 3,
+              decoration: InputDecoration(
+                  labelText: 'תיאור מפורט *',
+                  hintText: _category == 'רכב'
+                      ? 'מצב הרכב, טיפולים, בעלות קודמת, פגמים וכל פרט חשוב'
+                      : _category == 'נדל״ן'
+                          ? 'תיאור הנכס, הסביבה, כיווני אוויר, מצב השיפוץ וכל פרט חשוב'
+                          : 'מצב המוצר, מידות, גיל, פגמים וכל פרט חשוב',
+                  border: const OutlineInputBorder())),
+          const SizedBox(height: 12),
+          TextField(
+              controller: _priceCtrl,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                  labelText: _category == 'נדל״ן'
+                      ? (_propertyDealType == 'rent'
+                          ? 'שכר דירה חודשי (₪) *'
+                          : 'מחיר מכירה (₪) *')
+                      : 'מחיר (₪) — 0 למסירה',
+                  hintText: '0',
+                  helperText: _category == 'נדל״ן'
+                      ? 'יש להזין את המחיר המבוקש ללא פסיקים'
+                      : 'מחיר 0 יסווג את המודעה כמסירה',
+                  border: const OutlineInputBorder(),
+                  prefixText: '₪ ')),
+          const SizedBox(height: 12),
+          Material(
+            type: MaterialType.transparency,
+            child: SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('המחיר גמיש'),
+              subtitle: const Text('רלוונטי כאשר המחיר גדול מאפס'),
+              value: _negotiable,
+              onChanged: (value) => setState(() => _negotiable = value),
             ),
           ),
-        ),
+          if (_category != 'רכב' && _category != 'נדל״ן') ...[
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              isExpanded: true,
+              key: ValueKey('listing-_condition-$_condition'),
+              initialValue: _condition,
+              decoration: const InputDecoration(
+                  labelText: 'מצב המוצר *',
+                  prefixIcon: Icon(Icons.verified_outlined),
+                  border: OutlineInputBorder()),
+              items: const [
+                DropdownMenuItem(value: 'new', child: Text('חדש')),
+                DropdownMenuItem(value: 'like_new', child: Text('כמו חדש')),
+                DropdownMenuItem(value: 'good', child: Text('מצב טוב')),
+                DropdownMenuItem(value: 'fair', child: Text('מצב סביר')),
+                DropdownMenuItem(
+                    value: 'for_parts', child: Text('לתיקון / לחלקים')),
+              ],
+              onChanged: (value) =>
+                  setState(() => _condition = value ?? 'good'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _quantityCtrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                  labelText: 'כמות',
+                  prefixIcon: Icon(Icons.numbers),
+                  border: OutlineInputBorder()),
+            ),
+          ],
+          const SizedBox(height: 24),
+          const ListingEditorSection(
+            title: 'מיקום וקבלת המוצר',
+            subtitle: 'איפה המודעה רלוונטית ואיך אפשר לקבל את המוצר',
+            icon: Icons.place_outlined,
+          ),
+          // City
+          _LocationAutocompleteField(
+            controller: _cityCtrl,
+            label: 'עיר או אזור *',
+            hint: 'התחל להקליד ובחר מהרשימה',
+          ),
+          TextButton.icon(
+            onPressed: _locatingCity ? null : _loadCityFromDevice,
+            icon: const Icon(Icons.my_location),
+            label: Text(
+                _locatingCity ? 'מאתר יישוב...' : 'זיהוי עיר לפי המיקום שלי'),
+          ),
+          const GeocodingAttribution(),
+          if (_category != 'רכב' && _category != 'נדל״ן') ...[
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              isExpanded: true,
+              key: ValueKey('listing-_deliveryMethod-$_deliveryMethod'),
+              initialValue: _deliveryMethod,
+              decoration: const InputDecoration(
+                  labelText: 'אופן קבלה *',
+                  prefixIcon: Icon(Icons.local_shipping_outlined),
+                  border: OutlineInputBorder()),
+              items: const [
+                DropdownMenuItem(value: 'pickup', child: Text('איסוף עצמי')),
+                DropdownMenuItem(value: 'delivery', child: Text('משלוח')),
+                DropdownMenuItem(
+                    value: 'both', child: Text('איסוף עצמי או משלוח')),
+              ],
+              onChanged: (value) =>
+                  setState(() => _deliveryMethod = value ?? 'pickup'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _pickupCtrl,
+              textDirection: TextDirection.rtl,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                  labelText: 'פרטי איסוף או משלוח',
+                  hintText: 'לדוגמה: איסוף בשעות הערב, קומה ללא מעלית',
+                  border: OutlineInputBorder()),
+            ),
+          ],
+          const SizedBox(height: 8),
+          _ListingContactPreferences(
+            inApp: _contactInApp,
+            email: _contactEmail,
+            phone: _contactPhone,
+            hoursController: _contactHoursCtrl,
+            onChanged: (key, value) => setState(() {
+              if (key == 'in_app') _contactInApp = value;
+              if (key == 'email') _contactEmail = value;
+              if (key == 'phone') _contactPhone = value;
+            }),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<int>(
+            isExpanded: true,
+            key: ValueKey('listing-_expiryDays-$_expiryDays'),
+            initialValue: _expiryDays,
+            decoration: const InputDecoration(
+                labelText: 'משך פרסום',
+                prefixIcon: Icon(Icons.schedule_outlined),
+                border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 7, child: Text('7 ימים')),
+              DropdownMenuItem(value: 14, child: Text('14 ימים')),
+              DropdownMenuItem(value: 30, child: Text('30 ימים')),
+              DropdownMenuItem(value: 60, child: Text('60 ימים')),
+            ],
+            onChanged: (value) => setState(() => _expiryDays = value ?? 30),
+          ),
+          const SizedBox(height: 24),
+          const Divider(),
+          const SizedBox(height: 12),
+          Text('הוספת תמונות',
+              style: TextStyle(
+                  fontSize: 17, color: kTextDark, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          Text('ניתן להוסיף עד 8 תמונות, ללא אנשים',
+              style: TextStyle(fontSize: 13, color: kSubtext)),
+          const SizedBox(height: 10),
+          _dynamicImagePicker(),
+          const SizedBox(height: 16),
+          _listingVideoPicker(),
+        ]),
       ),
     );
   }
@@ -18010,6 +18345,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
         ]),
         const SizedBox(height: 10),
         DropdownButtonFormField<String>(
+          isExpanded: true,
+          key: ValueKey('listing-_vehicleTransmission-$_vehicleTransmission'),
           initialValue: _vehicleTransmission,
           decoration: const InputDecoration(
               labelText: 'תיבת הילוכים', border: OutlineInputBorder()),
@@ -18135,6 +18472,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
         ]),
         const SizedBox(height: 10),
         DropdownButtonFormField<String>(
+          isExpanded: true,
+          key: ValueKey('listing-_vehicleTransmission-$_vehicleTransmission'),
           initialValue: _vehicleTransmission,
           decoration: const InputDecoration(
               labelText: 'תיבת הילוכים', border: OutlineInputBorder()),
@@ -18363,24 +18702,27 @@ class _PostListingScreenState extends State<PostListingScreen> {
         );
     Widget feature(String label, IconData icon, bool value,
             ValueChanged<bool> onChanged) =>
-        CheckboxListTile(
-          dense: true,
-          contentPadding: EdgeInsets.zero,
-          controlAffinity: ListTileControlAffinity.leading,
-          secondary: Icon(icon, color: kPrimary, size: 20),
-          title: Text(label),
-          value: value,
-          onChanged: (checked) {
-            onChanged(checked == true);
-            _updateGeneratedCategoryText();
-          },
+        Material(
+          type: MaterialType.transparency,
+          child: CheckboxListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            secondary: Icon(icon, color: kPrimary, size: 20),
+            title: Text(label),
+            value: value,
+            onChanged: (checked) {
+              onChanged(checked == true);
+              _updateGeneratedCategoryText();
+            },
+          ),
         );
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: const Color(0xFFF4F9FD),
         border: Border.all(color: kBorder),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(18),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         const Row(children: [
@@ -18390,46 +18732,44 @@ class _PostListingScreenState extends State<PostListingScreen> {
               style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
         ]),
         const SizedBox(height: 12),
-        Row(children: [
-          Expanded(
-            child: DropdownButtonFormField<String>(
-              initialValue: _propertyDealType,
-              decoration: const InputDecoration(
-                  labelText: 'סוג עסקה *', border: OutlineInputBorder()),
-              items: const [
-                DropdownMenuItem(value: 'rent', child: Text('השכרה')),
-                DropdownMenuItem(value: 'sale', child: Text('מכירה')),
-              ],
-              onChanged: (value) => setState(() {
-                _propertyDealType = value ?? 'rent';
-                _updateGeneratedCategoryText();
-              }),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: DropdownButtonFormField<String>(
-              initialValue: _propertyType,
-              decoration: const InputDecoration(
-                  labelText: 'סוג נכס *', border: OutlineInputBorder()),
-              items: const [
-                DropdownMenuItem(value: 'apartment', child: Text('דירה')),
-                DropdownMenuItem(value: 'house', child: Text('בית פרטי')),
-                DropdownMenuItem(value: 'garden', child: Text('דירת גן')),
-                DropdownMenuItem(value: 'penthouse', child: Text('פנטהאוז')),
-                DropdownMenuItem(value: 'duplex', child: Text('דופלקס')),
-                DropdownMenuItem(
-                    value: 'studio', child: Text('יחידת דיור / סטודיו')),
-                DropdownMenuItem(value: 'other', child: Text('אחר')),
-              ],
-              onChanged: (value) => setState(() {
-                _propertyType = value ?? 'apartment';
-                _updateGeneratedCategoryText();
-              }),
-            ),
-          ),
-        ]),
-        const SizedBox(height: 10),
+        DropdownButtonFormField<String>(
+          isExpanded: true,
+          key: ValueKey('listing-_propertyDealType-$_propertyDealType'),
+          initialValue: _propertyDealType,
+          decoration: const InputDecoration(
+              labelText: 'סוג עסקה *', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'rent', child: Text('השכרה')),
+            DropdownMenuItem(value: 'sale', child: Text('מכירה')),
+          ],
+          onChanged: (value) => setState(() {
+            _propertyDealType = value ?? 'rent';
+            _updateGeneratedCategoryText();
+          }),
+        ),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          isExpanded: true,
+          key: ValueKey('listing-_propertyType-$_propertyType'),
+          initialValue: _propertyType,
+          decoration: const InputDecoration(
+              labelText: 'סוג נכס *', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'apartment', child: Text('דירה')),
+            DropdownMenuItem(value: 'house', child: Text('בית פרטי')),
+            DropdownMenuItem(value: 'garden', child: Text('דירת גן')),
+            DropdownMenuItem(value: 'penthouse', child: Text('פנטהאוז')),
+            DropdownMenuItem(value: 'duplex', child: Text('דופלקס')),
+            DropdownMenuItem(
+                value: 'studio', child: Text('יחידת דיור / סטודיו')),
+            DropdownMenuItem(value: 'other', child: Text('אחר')),
+          ],
+          onChanged: (value) => setState(() {
+            _propertyType = value ?? 'apartment';
+            _updateGeneratedCategoryText();
+          }),
+        ),
+        const SizedBox(height: 12),
         TextField(
           controller: _propertyStreetCtrl,
           textDirection: TextDirection.rtl,
@@ -18440,116 +18780,72 @@ class _PostListingScreenState extends State<PostListingScreen> {
             border: OutlineInputBorder(),
           ),
         ),
-        const SizedBox(height: 10),
-        Row(children: [
-          Expanded(
-              child: numberField(_propertyRoomsCtrl, 'חדרים', decimal: true)),
-          const SizedBox(width: 8),
-          Expanded(child: numberField(_propertyAreaCtrl, 'שטח במ״ר')),
-          const SizedBox(width: 8),
-          Expanded(child: numberField(_propertyFloorCtrl, 'קומה')),
-          const SizedBox(width: 8),
-          Expanded(child: numberField(_propertyTotalFloorsCtrl, 'מתוך קומות')),
-        ]),
-        const SizedBox(height: 10),
-        Row(children: [
-          Expanded(
-            child: _PropertyEntryDateField(
-              controller: _propertyEntryCtrl,
-              onChanged: () => setState(() {}),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: DropdownButtonFormField<String>(
-              initialValue: _propertyFurniture,
-              decoration: const InputDecoration(
-                  labelText: 'ריהוט', border: OutlineInputBorder()),
-              items: const [
-                DropdownMenuItem(value: 'none', child: Text('ללא ריהוט')),
-                DropdownMenuItem(value: 'partial', child: Text('ריהוט חלקי')),
-                DropdownMenuItem(value: 'full', child: Text('מרוהטת')),
-              ],
-              onChanged: (value) => setState(() {
-                _propertyFurniture = value ?? 'none';
-                _updateGeneratedCategoryText();
-              }),
-            ),
-          ),
-        ]),
+        const SizedBox(height: 12),
+        numberField(_propertyRoomsCtrl, 'חדרים', decimal: true),
+        const SizedBox(height: 12),
+        numberField(_propertyAreaCtrl, 'שטח במ״ר'),
+        const SizedBox(height: 12),
+        numberField(_propertyFloorCtrl, 'קומה'),
+        const SizedBox(height: 12),
+        numberField(_propertyTotalFloorsCtrl, 'מתוך קומות'),
+        const SizedBox(height: 12),
+        _PropertyEntryDateField(
+          controller: _propertyEntryCtrl,
+          onChanged: () => setState(() {}),
+        ),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          isExpanded: true,
+          key: ValueKey('listing-_propertyFurniture-$_propertyFurniture'),
+          initialValue: _propertyFurniture,
+          decoration: const InputDecoration(
+              labelText: 'ריהוט', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'none', child: Text('ללא ריהוט')),
+            DropdownMenuItem(value: 'partial', child: Text('ריהוט חלקי')),
+            DropdownMenuItem(value: 'full', child: Text('מרוהטת')),
+          ],
+          onChanged: (value) => setState(() {
+            _propertyFurniture = value ?? 'none';
+            _updateGeneratedCategoryText();
+          }),
+        ),
         if (_propertyDealType == 'rent') ...[
-          const SizedBox(height: 10),
-          Row(children: [
-            Expanded(
-                child: numberField(_propertyArnonaCtrl, 'ארנונה לחודשיים (₪)')),
-            const SizedBox(width: 10),
-            Expanded(
-                child: numberField(_propertyVaadCtrl, 'ועד בית לחודש (₪)')),
-          ]),
+          const SizedBox(height: 12),
+          numberField(_propertyArnonaCtrl, 'ארנונה לחודשיים (₪)'),
+          const SizedBox(height: 12),
+          numberField(_propertyVaadCtrl, 'ועד בית לחודש (₪)'),
         ],
         const SizedBox(height: 8),
         const Text('מה יש בנכס?',
             style: TextStyle(fontWeight: FontWeight.bold, color: kPrimary)),
-        Wrap(spacing: 8, runSpacing: 0, children: [
-          SizedBox(
-              width: 210,
-              child: feature(
-                  'חניה',
-                  Icons.local_parking_outlined,
-                  _propertyParking,
-                  (v) => setState(() => _propertyParking = v))),
-          SizedBox(
-              width: 210,
-              child: feature(
-                  'מעלית',
-                  Icons.elevator_outlined,
-                  _propertyElevator,
-                  (v) => setState(() => _propertyElevator = v))),
-          SizedBox(
-              width: 210,
-              child: feature('ממ״ד', Icons.shield_outlined, _propertyMamad,
-                  (v) => setState(() => _propertyMamad = v))),
-          SizedBox(
-              width: 210,
-              child: feature('מרפסת', Icons.balcony_outlined, _propertyBalcony,
-                  (v) => setState(() => _propertyBalcony = v))),
-          SizedBox(
-              width: 210,
-              child: feature(
-                  'נגישות',
-                  Icons.accessible_outlined,
-                  _propertyAccessible,
-                  (v) => setState(() => _propertyAccessible = v))),
-          SizedBox(
-              width: 210,
-              child: feature(
-                  'מחסן',
-                  Icons.inventory_2_outlined,
-                  _propertyStorage,
-                  (v) => setState(() => _propertyStorage = v))),
-          SizedBox(
-              width: 210,
-              child: feature(
-                  'מיזוג',
-                  Icons.ac_unit_outlined,
-                  _propertyAirConditioning,
-                  (v) => setState(() => _propertyAirConditioning = v))),
-          if (_propertyDealType == 'rent')
-            SizedBox(
-                width: 210,
-                child: feature('אפשר בעלי חיים', Icons.pets_outlined,
-                    _propertyPets, (v) => setState(() => _propertyPets = v))),
-        ]),
+        feature('חניה', Icons.local_parking_outlined, _propertyParking,
+            (v) => setState(() => _propertyParking = v)),
+        feature('מעלית', Icons.elevator_outlined, _propertyElevator,
+            (v) => setState(() => _propertyElevator = v)),
+        feature('ממ״ד', Icons.shield_outlined, _propertyMamad,
+            (v) => setState(() => _propertyMamad = v)),
+        feature('מרפסת', Icons.balcony_outlined, _propertyBalcony,
+            (v) => setState(() => _propertyBalcony = v)),
+        feature('נגישות', Icons.accessible_outlined, _propertyAccessible,
+            (v) => setState(() => _propertyAccessible = v)),
+        feature('מחסן', Icons.inventory_2_outlined, _propertyStorage,
+            (v) => setState(() => _propertyStorage = v)),
+        feature('מיזוג', Icons.ac_unit_outlined, _propertyAirConditioning,
+            (v) => setState(() => _propertyAirConditioning = v)),
+        if (_propertyDealType == 'rent')
+          feature('אפשר בעלי חיים', Icons.pets_outlined, _propertyPets,
+              (v) => setState(() => _propertyPets = v)),
       ]),
     );
   }
 
   Widget _vehicleFields() => Container(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           color: const Color(0xFFF4F9FD),
           border: Border.all(color: kBorder),
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(18),
         ),
         child:
             Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -18604,40 +18900,29 @@ class _PostListingScreenState extends State<PostListingScreen> {
             label: 'סוג רכב',
             options: _kVehicleFieldOptions['vehicle_type']!,
           ),
-          const SizedBox(height: 10),
-          Row(children: [
-            Expanded(
-                child: _PopularValueField(
-              controller: _vehicleManufacturerCtrl,
-              label: 'יצרן',
-              options: _kVehicleManufacturers,
-              onChanged: (_) => setState(() => _vehicleModelCtrl.clear()),
-            )),
-            const SizedBox(width: 10),
-            Expanded(
-                child: _PopularValueField(
-              controller: _vehicleModelCtrl,
-              label: 'דגם',
-              options:
-                  _kVehicleModels[_vehicleManufacturerCtrl.text] ?? const [],
-            )),
-          ]),
-          const SizedBox(height: 10),
-          Row(children: [
-            Expanded(
-                child: _vehicleTextField(_vehicleYearCtrl, 'שנת ייצור',
-                    numeric: true)),
-            const SizedBox(width: 10),
-            Expanded(
-                child: _vehicleTextField(_vehicleMileageCtrl, 'קילומטראז׳',
-                    numeric: true)),
-            const SizedBox(width: 10),
-            Expanded(
-                child:
-                    _vehicleTextField(_vehicleHandCtrl, 'יד', numeric: true)),
-          ]),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
+          _PopularValueField(
+            controller: _vehicleManufacturerCtrl,
+            label: 'יצרן',
+            options: _kVehicleManufacturers,
+            onChanged: (_) => setState(() => _vehicleModelCtrl.clear()),
+          ),
+          const SizedBox(height: 12),
+          _PopularValueField(
+            controller: _vehicleModelCtrl,
+            label: 'דגם',
+            options: _kVehicleModels[_vehicleManufacturerCtrl.text] ?? const [],
+          ),
+          const SizedBox(height: 12),
+          _vehicleTextField(_vehicleYearCtrl, 'שנת ייצור', numeric: true),
+          const SizedBox(height: 12),
+          _vehicleTextField(_vehicleMileageCtrl, 'קילומטראז׳', numeric: true),
+          const SizedBox(height: 12),
+          _vehicleTextField(_vehicleHandCtrl, 'יד', numeric: true),
+          const SizedBox(height: 12),
           DropdownButtonFormField<String>(
+            isExpanded: true,
+            key: ValueKey('listing-_vehicleTransmission-$_vehicleTransmission'),
             initialValue: _vehicleTransmission,
             decoration: const InputDecoration(
                 labelText: 'תיבת הילוכים', border: OutlineInputBorder()),
@@ -18652,28 +18937,17 @@ class _PostListingScreenState extends State<PostListingScreen> {
               _updateGeneratedVehicleText();
             }),
           ),
-          const SizedBox(height: 10),
-          Row(children: [
-            Expanded(child: _vehicleTextField(_vehicleFuelCtrl, 'סוג דלק')),
-            const SizedBox(width: 10),
-            Expanded(child: _vehicleTextField(_vehicleColorCtrl, 'צבע')),
-          ]),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
+          _vehicleTextField(_vehicleFuelCtrl, 'סוג דלק'),
+          const SizedBox(height: 12),
+          _vehicleTextField(_vehicleColorCtrl, 'צבע'),
+          const SizedBox(height: 12),
           _vehicleTextField(_vehicleTestCtrl, 'תוקף מבחן רישוי (טסט)'),
-          const SizedBox(height: 10),
-          for (var index = 1;
-              index < _kVehicleExtraFields.length;
-              index += 2) ...[
-            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Expanded(child: _vehicleExtraField(_kVehicleExtraFields[index])),
-              if (index + 1 < _kVehicleExtraFields.length) ...[
-                const SizedBox(width: 10),
-                Expanded(
-                    child: _vehicleExtraField(_kVehicleExtraFields[index + 1])),
-              ],
-            ]),
-            if (index + 2 < _kVehicleExtraFields.length)
-              const SizedBox(height: 10),
+          const SizedBox(height: 12),
+          for (var index = 1; index < _kVehicleExtraFields.length; index++) ...[
+            _vehicleExtraField(_kVehicleExtraFields[index]),
+            if (index + 1 < _kVehicleExtraFields.length)
+              const SizedBox(height: 12),
           ],
           const SizedBox(height: 6),
           Text(
@@ -18798,25 +19072,19 @@ class _EditListingScreenState extends State<EditListingScreen> {
     final fields = _detailFieldsForCategory(_category);
     if (fields.isEmpty) return const SizedBox.shrink();
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: const Color(0xFFF4F9FD),
         border: Border.all(color: kBorder),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(18),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Text('מאפייני $_category',
             style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 10),
-        for (var index = 0; index < fields.length; index += 2) ...[
-          Row(children: [
-            Expanded(child: _editCategoryDetailField(fields[index])),
-            if (index + 1 < fields.length) ...[
-              const SizedBox(width: 10),
-              Expanded(child: _editCategoryDetailField(fields[index + 1])),
-            ],
-          ]),
-          if (index + 2 < fields.length) const SizedBox(height: 10),
+        const SizedBox(height: 12),
+        for (var index = 0; index < fields.length; index++) ...[
+          _editCategoryDetailField(fields[index]),
+          if (index + 1 < fields.length) const SizedBox(height: 12),
         ],
       ]),
     );
@@ -18854,13 +19122,20 @@ class _EditListingScreenState extends State<EditListingScreen> {
               labelText: label, border: const OutlineInputBorder()),
         );
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: const Color(0xFFF4F9FD),
         border: Border.all(color: kBorder),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(18),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        const Row(children: [
+          Icon(Icons.directions_car_outlined, color: kPrimary),
+          SizedBox(width: 8),
+          Text('מאפייני הרכב',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+        ]),
+        const SizedBox(height: 12),
         TextField(
           controller: _plateCtrl,
           keyboardType: TextInputType.number,
@@ -18872,40 +19147,34 @@ class _EditListingScreenState extends State<EditListingScreen> {
             border: OutlineInputBorder(),
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 12),
         _PopularValueField(
           controller: _vehicleExtraCtrls['vehicle_type']!,
           label: 'סוג רכב',
           options: _kVehicleFieldOptions['vehicle_type']!,
         ),
-        const SizedBox(height: 10),
-        Row(children: [
-          Expanded(
-              child: _PopularValueField(
-            controller: _vehicleManufacturerCtrl,
-            label: 'יצרן',
-            options: _kVehicleManufacturers,
-            onChanged: (_) => setState(() => _vehicleModelCtrl.clear()),
-          )),
-          const SizedBox(width: 10),
-          Expanded(
-              child: _PopularValueField(
-            controller: _vehicleModelCtrl,
-            label: 'דגם',
-            options: _kVehicleModels[_vehicleManufacturerCtrl.text] ?? const [],
-          )),
-        ]),
-        const SizedBox(height: 10),
-        Row(children: [
-          Expanded(child: field(_vehicleYearCtrl, 'שנת ייצור', numeric: true)),
-          const SizedBox(width: 10),
-          Expanded(
-              child: field(_vehicleMileageCtrl, 'קילומטראז׳', numeric: true)),
-          const SizedBox(width: 10),
-          Expanded(child: field(_vehicleHandCtrl, 'יד', numeric: true)),
-        ]),
-        const SizedBox(height: 10),
+        const SizedBox(height: 12),
+        _PopularValueField(
+          controller: _vehicleManufacturerCtrl,
+          label: 'יצרן',
+          options: _kVehicleManufacturers,
+          onChanged: (_) => setState(() => _vehicleModelCtrl.clear()),
+        ),
+        const SizedBox(height: 12),
+        _PopularValueField(
+          controller: _vehicleModelCtrl,
+          label: 'דגם',
+          options: _kVehicleModels[_vehicleManufacturerCtrl.text] ?? const [],
+        ),
+        const SizedBox(height: 12),
+        field(_vehicleYearCtrl, 'שנת ייצור', numeric: true),
+        const SizedBox(height: 12),
+        field(_vehicleMileageCtrl, 'קילומטראז׳', numeric: true),
+        const SizedBox(height: 12),
+        field(_vehicleHandCtrl, 'יד', numeric: true),
+        const SizedBox(height: 12),
         DropdownButtonFormField<String>(
+          isExpanded: true,
           initialValue: _vehicleTransmission,
           decoration: const InputDecoration(
               labelText: 'תיבת הילוכים', border: OutlineInputBorder()),
@@ -18920,47 +19189,25 @@ class _EditListingScreenState extends State<EditListingScreen> {
             _updateGeneratedVehicleText();
           }),
         ),
-        const SizedBox(height: 10),
-        Row(children: [
-          Expanded(child: field(_vehicleFuelCtrl, 'סוג דלק')),
-          const SizedBox(width: 10),
-          Expanded(child: field(_vehicleColorCtrl, 'צבע')),
-        ]),
-        const SizedBox(height: 10),
+        const SizedBox(height: 12),
+        field(_vehicleFuelCtrl, 'סוג דלק'),
+        const SizedBox(height: 12),
+        field(_vehicleColorCtrl, 'צבע'),
+        const SizedBox(height: 12),
         field(_vehicleTestCtrl, 'תוקף מבחן רישוי (טסט)'),
-        const SizedBox(height: 10),
-        for (var index = 1;
-            index < _kVehicleExtraFields.length;
-            index += 2) ...[
-          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Expanded(
-                child: _PopularValueField(
-              controller: _vehicleExtraCtrls[_kVehicleExtraFields[index].$1]!,
-              label: _kVehicleExtraFields[index].$2,
-              hint: _kVehicleExtraFields[index].$3.isEmpty
-                  ? null
-                  : _kVehicleExtraFields[index].$3,
-              options: _kVehicleFieldOptions[_kVehicleExtraFields[index].$1] ??
-                  const [],
-            )),
-            if (index + 1 < _kVehicleExtraFields.length) ...[
-              const SizedBox(width: 10),
-              Expanded(
-                  child: _PopularValueField(
-                controller:
-                    _vehicleExtraCtrls[_kVehicleExtraFields[index + 1].$1]!,
-                label: _kVehicleExtraFields[index + 1].$2,
-                hint: _kVehicleExtraFields[index + 1].$3.isEmpty
-                    ? null
-                    : _kVehicleExtraFields[index + 1].$3,
-                options:
-                    _kVehicleFieldOptions[_kVehicleExtraFields[index + 1].$1] ??
-                        const [],
-              )),
-            ],
-          ]),
-          if (index + 2 < _kVehicleExtraFields.length)
-            const SizedBox(height: 10),
+        const SizedBox(height: 12),
+        for (var index = 1; index < _kVehicleExtraFields.length; index++) ...[
+          _PopularValueField(
+            controller: _vehicleExtraCtrls[_kVehicleExtraFields[index].$1]!,
+            label: _kVehicleExtraFields[index].$2,
+            hint: _kVehicleExtraFields[index].$3.isEmpty
+                ? null
+                : _kVehicleExtraFields[index].$3,
+            options: _kVehicleFieldOptions[_kVehicleExtraFields[index].$1] ??
+                const [],
+          ),
+          if (index + 1 < _kVehicleExtraFields.length)
+            const SizedBox(height: 12),
         ],
       ]),
     );
@@ -18979,148 +19226,131 @@ class _EditListingScreenState extends State<EditListingScreen> {
               labelText: label, border: const OutlineInputBorder()),
         );
     Widget check(String label, bool value, ValueChanged<bool> changed) =>
-        CheckboxListTile(
-          dense: true,
-          contentPadding: EdgeInsets.zero,
-          controlAffinity: ListTileControlAffinity.leading,
-          title: Text(label),
-          value: value,
-          onChanged: (v) {
-            changed(v == true);
-            _updateGeneratedCategoryText();
-          },
+        Material(
+          type: MaterialType.transparency,
+          child: CheckboxListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: Text(label),
+            value: value,
+            onChanged: (v) {
+              changed(v == true);
+              _updateGeneratedCategoryText();
+            },
+          ),
         );
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: const Color(0xFFF4F9FD),
         border: Border.all(color: kBorder),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(18),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        const Text('מאפייני הנכס',
-            style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 10),
-        Row(children: [
-          Expanded(
-              child: DropdownButtonFormField<String>(
-            initialValue: _propertyDealType,
-            decoration: const InputDecoration(
-                labelText: 'סוג עסקה', border: OutlineInputBorder()),
-            items: const [
-              DropdownMenuItem(value: 'rent', child: Text('השכרה')),
-              DropdownMenuItem(value: 'sale', child: Text('מכירה')),
-            ],
-            onChanged: (v) => setState(() {
-              _propertyDealType = v ?? 'rent';
-              _updateGeneratedCategoryText();
-            }),
-          )),
-          const SizedBox(width: 10),
-          Expanded(
-              child: DropdownButtonFormField<String>(
-            initialValue: _propertyType,
-            decoration: const InputDecoration(
-                labelText: 'סוג נכס', border: OutlineInputBorder()),
-            items: const [
-              DropdownMenuItem(value: 'apartment', child: Text('דירה')),
-              DropdownMenuItem(value: 'house', child: Text('בית פרטי')),
-              DropdownMenuItem(value: 'garden', child: Text('דירת גן')),
-              DropdownMenuItem(value: 'penthouse', child: Text('פנטהאוז')),
-              DropdownMenuItem(value: 'duplex', child: Text('דופלקס')),
-              DropdownMenuItem(
-                  value: 'studio', child: Text('יחידת דיור / סטודיו')),
-              DropdownMenuItem(value: 'other', child: Text('אחר')),
-            ],
-            onChanged: (v) => setState(() {
-              _propertyType = v ?? 'apartment';
-              _updateGeneratedCategoryText();
-            }),
-          )),
+        const Row(children: [
+          Icon(Icons.apartment_outlined, color: kPrimary),
+          SizedBox(width: 8),
+          Text('מאפייני הנכס',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
         ]),
-        const SizedBox(height: 10),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          isExpanded: true,
+          initialValue: _propertyDealType,
+          decoration: const InputDecoration(
+              labelText: 'סוג עסקה', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'rent', child: Text('השכרה')),
+            DropdownMenuItem(value: 'sale', child: Text('מכירה')),
+          ],
+          onChanged: (v) => setState(() {
+            _propertyDealType = v ?? 'rent';
+            _updateGeneratedCategoryText();
+          }),
+        ),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          isExpanded: true,
+          initialValue: _propertyType,
+          decoration: const InputDecoration(
+              labelText: 'סוג נכס', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'apartment', child: Text('דירה')),
+            DropdownMenuItem(value: 'house', child: Text('בית פרטי')),
+            DropdownMenuItem(value: 'garden', child: Text('דירת גן')),
+            DropdownMenuItem(value: 'penthouse', child: Text('פנטהאוז')),
+            DropdownMenuItem(value: 'duplex', child: Text('דופלקס')),
+            DropdownMenuItem(
+                value: 'studio', child: Text('יחידת דיור / סטודיו')),
+            DropdownMenuItem(value: 'other', child: Text('אחר')),
+          ],
+          onChanged: (v) => setState(() {
+            _propertyType = v ?? 'apartment';
+            _updateGeneratedCategoryText();
+          }),
+        ),
+        const SizedBox(height: 12),
         TextField(
           controller: _propertyStreetCtrl,
           decoration: const InputDecoration(
               labelText: 'רחוב / שכונה', border: OutlineInputBorder()),
         ),
-        const SizedBox(height: 10),
-        Row(children: [
-          Expanded(child: field(_propertyRoomsCtrl, 'חדרים', decimal: true)),
-          const SizedBox(width: 8),
-          Expanded(child: field(_propertyAreaCtrl, 'מ״ר')),
-          const SizedBox(width: 8),
-          Expanded(child: field(_propertyFloorCtrl, 'קומה')),
-          const SizedBox(width: 8),
-          Expanded(child: field(_propertyTotalFloorsCtrl, 'מתוך')),
-        ]),
-        const SizedBox(height: 10),
-        Row(children: [
-          Expanded(
-              child: _PropertyEntryDateField(
-            controller: _propertyEntryCtrl,
-            onChanged: () => setState(() {}),
-          )),
-          const SizedBox(width: 10),
-          Expanded(
-              child: DropdownButtonFormField<String>(
-            initialValue: _propertyFurniture,
-            decoration: const InputDecoration(
-                labelText: 'ריהוט', border: OutlineInputBorder()),
-            items: const [
-              DropdownMenuItem(value: 'none', child: Text('ללא ריהוט')),
-              DropdownMenuItem(value: 'partial', child: Text('ריהוט חלקי')),
-              DropdownMenuItem(value: 'full', child: Text('מרוהטת')),
-            ],
-            onChanged: (v) => setState(() {
-              _propertyFurniture = v ?? 'none';
-              _updateGeneratedCategoryText();
-            }),
-          )),
-        ]),
+        const SizedBox(height: 12),
+        field(_propertyRoomsCtrl, 'חדרים', decimal: true),
+        const SizedBox(height: 12),
+        field(_propertyAreaCtrl, 'מ״ר'),
+        const SizedBox(height: 12),
+        field(_propertyFloorCtrl, 'קומה'),
+        const SizedBox(height: 12),
+        field(_propertyTotalFloorsCtrl, 'מתוך קומות'),
+        const SizedBox(height: 12),
+        _PropertyEntryDateField(
+          controller: _propertyEntryCtrl,
+          onChanged: () => setState(() {}),
+        ),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          isExpanded: true,
+          initialValue: _propertyFurniture,
+          decoration: const InputDecoration(
+              labelText: 'ריהוט', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'none', child: Text('ללא ריהוט')),
+            DropdownMenuItem(value: 'partial', child: Text('ריהוט חלקי')),
+            DropdownMenuItem(value: 'full', child: Text('מרוהטת')),
+          ],
+          onChanged: (v) => setState(() {
+            _propertyFurniture = v ?? 'none';
+            _updateGeneratedCategoryText();
+          }),
+        ),
         if (_propertyDealType == 'rent') ...[
-          const SizedBox(height: 10),
-          Row(children: [
-            Expanded(child: field(_propertyArnonaCtrl, 'ארנונה לחודשיים (₪)')),
-            const SizedBox(width: 10),
-            Expanded(child: field(_propertyVaadCtrl, 'ועד בית לחודש (₪)')),
-          ]),
+          const SizedBox(height: 12),
+          field(_propertyArnonaCtrl, 'ארנונה לחודשיים (₪)'),
+          const SizedBox(height: 12),
+          field(_propertyVaadCtrl, 'ועד בית לחודש (₪)'),
         ],
-        Wrap(spacing: 8, children: [
-          SizedBox(
-              width: 180,
-              child: check('חניה', _propertyParking,
-                  (v) => setState(() => _propertyParking = v))),
-          SizedBox(
-              width: 180,
-              child: check('מעלית', _propertyElevator,
-                  (v) => setState(() => _propertyElevator = v))),
-          SizedBox(
-              width: 180,
-              child: check('ממ״ד', _propertyMamad,
-                  (v) => setState(() => _propertyMamad = v))),
-          SizedBox(
-              width: 180,
-              child: check('מרפסת', _propertyBalcony,
-                  (v) => setState(() => _propertyBalcony = v))),
-          SizedBox(
-              width: 180,
-              child: check('נגישות', _propertyAccessible,
-                  (v) => setState(() => _propertyAccessible = v))),
-          SizedBox(
-              width: 180,
-              child: check('מחסן', _propertyStorage,
-                  (v) => setState(() => _propertyStorage = v))),
-          SizedBox(
-              width: 180,
-              child: check('מיזוג', _propertyAirConditioning,
-                  (v) => setState(() => _propertyAirConditioning = v))),
-          if (_propertyDealType == 'rent')
-            SizedBox(
-                width: 180,
-                child: check('אפשר בעלי חיים', _propertyPets,
-                    (v) => setState(() => _propertyPets = v))),
-        ]),
+        const SizedBox(height: 12),
+        const Text('מה יש בנכס?',
+            style: TextStyle(fontWeight: FontWeight.bold, color: kPrimary)),
+        check('חניה', _propertyParking,
+            (v) => setState(() => _propertyParking = v)),
+        check('מעלית', _propertyElevator,
+            (v) => setState(() => _propertyElevator = v)),
+        check(
+            'ממ״ד', _propertyMamad, (v) => setState(() => _propertyMamad = v)),
+        check('מרפסת', _propertyBalcony,
+            (v) => setState(() => _propertyBalcony = v)),
+        check('נגישות', _propertyAccessible,
+            (v) => setState(() => _propertyAccessible = v)),
+        check('מחסן', _propertyStorage,
+            (v) => setState(() => _propertyStorage = v)),
+        check('מיזוג', _propertyAirConditioning,
+            (v) => setState(() => _propertyAirConditioning = v)),
+        if (_propertyDealType == 'rent')
+          check('אפשר בעלי חיים', _propertyPets,
+              (v) => setState(() => _propertyPets = v)),
       ]),
     );
   }
@@ -19729,200 +19959,187 @@ class _EditListingScreenState extends State<EditListingScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 820),
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text('תמונות (עד 8, ללא אנשים)',
-                            style: TextStyle(
-                                fontSize: 13,
-                                color: kSubtext,
-                                fontWeight: FontWeight.w500)),
-                        const SizedBox(height: 8),
-                        _dynamicImagePicker(),
-                        const SizedBox(height: 16),
-                        _listingVideoPicker(),
-                        const SizedBox(height: 16),
-                        TextField(
-                            controller: _titleCtrl,
-                            onChanged: (_) => _titleManuallyEdited = true,
-                            textDirection: TextDirection.rtl,
-                            decoration: const InputDecoration(
-                                labelText: 'כותרת המודעה *',
-                                border: OutlineInputBorder())),
-                        const SizedBox(height: 12),
-                        TextField(
-                            controller: _descCtrl,
-                            onChanged: (_) => _descriptionManuallyEdited = true,
-                            textDirection: TextDirection.rtl,
-                            maxLines: 3,
-                            decoration: const InputDecoration(
-                                labelText: 'תיאור',
-                                border: OutlineInputBorder())),
-                        const SizedBox(height: 12),
-                        TextField(
-                            controller: _priceCtrl,
-                            keyboardType: TextInputType.number,
-                            decoration: InputDecoration(
-                                labelText: _category == 'נדל״ן'
-                                    ? (_propertyDealType == 'rent'
-                                        ? 'שכר דירה חודשי (₪)'
-                                        : 'מחיר מכירה (₪)')
-                                    : 'מחיר (₪) — 0 למסירה',
-                                helperText: _category == 'נדל״ן'
-                                    ? 'המחיר המבוקש ללא פסיקים'
-                                    : 'מחיר 0 יסווג את המודעה כמסירה',
-                                border: const OutlineInputBorder(),
-                                prefixText: '₪ ')),
-                        const SizedBox(height: 12),
-                        InputDecorator(
-                          decoration: const InputDecoration(
-                            labelText: 'קטגוריה (לא ניתנת לשינוי)',
-                            border: OutlineInputBorder(),
-                            prefixIcon: Icon(Icons.lock_outline),
-                          ),
-                          child: Text(_category,
-                              style: const TextStyle(
-                                  fontSize: 16, fontWeight: FontWeight.w600)),
+          : ListingEditorLayout(
+              onSave: _preparingVideo ? null : _submit,
+              saveLabel: 'שמור שינויים',
+              status:
+                  _saving ? 'שומר את השינויים…' : 'אפשר לשמור מכל מקום בטופס',
+              saving: _saving,
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const ListingEditorSection(
+                      title: 'מעדכנים את המודעה',
+                      subtitle: 'השמירה תמיד זמינה בתחתית המסך',
+                      icon: Icons.edit_note_outlined,
+                    ),
+                    Text('תמונות (עד 8, ללא אנשים)',
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: kSubtext,
+                            fontWeight: FontWeight.w500)),
+                    const SizedBox(height: 8),
+                    _dynamicImagePicker(),
+                    const SizedBox(height: 16),
+                    _listingVideoPicker(),
+                    const SizedBox(height: 16),
+                    TextField(
+                        controller: _titleCtrl,
+                        onChanged: (_) => _titleManuallyEdited = true,
+                        textDirection: TextDirection.rtl,
+                        decoration: const InputDecoration(
+                            labelText: 'כותרת המודעה *',
+                            border: OutlineInputBorder())),
+                    const SizedBox(height: 12),
+                    TextField(
+                        controller: _descCtrl,
+                        onChanged: (_) => _descriptionManuallyEdited = true,
+                        textDirection: TextDirection.rtl,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                            labelText: 'תיאור', border: OutlineInputBorder())),
+                    const SizedBox(height: 12),
+                    TextField(
+                        controller: _priceCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: InputDecoration(
+                            labelText: _category == 'נדל״ן'
+                                ? (_propertyDealType == 'rent'
+                                    ? 'שכר דירה חודשי (₪)'
+                                    : 'מחיר מכירה (₪)')
+                                : 'מחיר (₪) — 0 למסירה',
+                            helperText: _category == 'נדל״ן'
+                                ? 'המחיר המבוקש ללא פסיקים'
+                                : 'מחיר 0 יסווג את המודעה כמסירה',
+                            border: const OutlineInputBorder(),
+                            prefixText: '₪ ')),
+                    const SizedBox(height: 12),
+                    InputDecorator(
+                      decoration: const InputDecoration(
+                        labelText: 'קטגוריה (לא ניתנת לשינוי)',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.lock_outline),
+                      ),
+                      child: Text(_category,
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w600)),
+                    ),
+                    if (_category == 'רכב') ...[
+                      const SizedBox(height: 12),
+                      _editVehicleFields(),
+                    ],
+                    if (_category == 'נדל״ן') ...[
+                      const SizedBox(height: 12),
+                      _editPropertyFields(),
+                    ],
+                    if (_category != 'רכב' && _category != 'נדל״ן') ...[
+                      const SizedBox(height: 12),
+                      _editCategorySpecificFields(),
+                    ],
+                    const SizedBox(height: 12),
+                    _LocationAutocompleteField(
+                      controller: _cityCtrl,
+                      label: 'עיר או יישוב',
+                    ),
+                    if (_category != 'רכב' && _category != 'נדל״ן') ...[
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        isExpanded: true,
+                        initialValue: _condition,
+                        decoration: const InputDecoration(
+                          labelText: 'מצב המוצר',
+                          border: OutlineInputBorder(),
                         ),
-                        if (_category == 'רכב') ...[
-                          const SizedBox(height: 12),
-                          _editVehicleFields(),
+                        items: const [
+                          DropdownMenuItem(value: 'new', child: Text('חדש')),
+                          DropdownMenuItem(
+                              value: 'like_new', child: Text('כמו חדש')),
+                          DropdownMenuItem(
+                              value: 'good', child: Text('מצב טוב')),
+                          DropdownMenuItem(
+                              value: 'fair', child: Text('מצב סביר')),
+                          DropdownMenuItem(
+                              value: 'for_parts',
+                              child: Text('לתיקון / לחלקים')),
                         ],
-                        if (_category == 'נדל״ן') ...[
-                          const SizedBox(height: 12),
-                          _editPropertyFields(),
+                        onChanged: (value) =>
+                            setState(() => _condition = value ?? 'good'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _quantityCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'כמות',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        isExpanded: true,
+                        initialValue: _deliveryMethod,
+                        decoration: const InputDecoration(
+                          labelText: 'אופן קבלה',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                              value: 'pickup', child: Text('איסוף עצמי')),
+                          DropdownMenuItem(
+                              value: 'delivery', child: Text('משלוח')),
+                          DropdownMenuItem(
+                              value: 'both',
+                              child: Text('איסוף עצמי או משלוח')),
                         ],
-                        if (_category != 'רכב' && _category != 'נדל״ן') ...[
-                          const SizedBox(height: 12),
-                          _editCategorySpecificFields(),
-                        ],
-                        const SizedBox(height: 12),
-                        _LocationAutocompleteField(
-                          controller: _cityCtrl,
-                          label: 'עיר או יישוב',
+                        onChanged: (value) =>
+                            setState(() => _deliveryMethod = value ?? 'pickup'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _pickupCtrl,
+                        maxLines: 2,
+                        textDirection: TextDirection.rtl,
+                        decoration: const InputDecoration(
+                          labelText: 'פרטי איסוף או משלוח',
+                          border: OutlineInputBorder(),
                         ),
-                        if (_category != 'רכב' && _category != 'נדל״ן') ...[
-                          const SizedBox(height: 12),
-                          DropdownButtonFormField<String>(
-                            initialValue: _condition,
-                            decoration: const InputDecoration(
-                              labelText: 'מצב המוצר',
-                              border: OutlineInputBorder(),
-                            ),
-                            items: const [
-                              DropdownMenuItem(
-                                  value: 'new', child: Text('חדש')),
-                              DropdownMenuItem(
-                                  value: 'like_new', child: Text('כמו חדש')),
-                              DropdownMenuItem(
-                                  value: 'good', child: Text('מצב טוב')),
-                              DropdownMenuItem(
-                                  value: 'fair', child: Text('מצב סביר')),
-                              DropdownMenuItem(
-                                  value: 'for_parts',
-                                  child: Text('לתיקון / לחלקים')),
-                            ],
-                            onChanged: (value) =>
-                                setState(() => _condition = value ?? 'good'),
-                          ),
-                          const SizedBox(height: 12),
-                          TextField(
-                            controller: _quantityCtrl,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: 'כמות',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          DropdownButtonFormField<String>(
-                            initialValue: _deliveryMethod,
-                            decoration: const InputDecoration(
-                              labelText: 'אופן קבלה',
-                              border: OutlineInputBorder(),
-                            ),
-                            items: const [
-                              DropdownMenuItem(
-                                  value: 'pickup', child: Text('איסוף עצמי')),
-                              DropdownMenuItem(
-                                  value: 'delivery', child: Text('משלוח')),
-                              DropdownMenuItem(
-                                  value: 'both',
-                                  child: Text('איסוף עצמי או משלוח')),
-                            ],
-                            onChanged: (value) => setState(
-                                () => _deliveryMethod = value ?? 'pickup'),
-                          ),
-                          const SizedBox(height: 12),
-                          TextField(
-                            controller: _pickupCtrl,
-                            maxLines: 2,
-                            textDirection: TextDirection.rtl,
-                            decoration: const InputDecoration(
-                              labelText: 'פרטי איסוף או משלוח',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                        ],
-                        SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: const Text('המחיר גמיש'),
-                          value: _negotiable,
-                          onChanged: (value) =>
-                              setState(() => _negotiable = value),
-                        ),
-                        _ListingContactPreferences(
-                          inApp: _contactInApp,
-                          email: _contactEmail,
-                          phone: _contactPhone,
-                          hoursController: _contactHoursCtrl,
-                          onChanged: (key, value) => setState(() {
-                            if (key == 'in_app') _contactInApp = value;
-                            if (key == 'email') _contactEmail = value;
-                            if (key == 'phone') _contactPhone = value;
-                          }),
-                        ),
-                        const SizedBox(height: 12),
-                        DropdownButtonFormField<int>(
-                          initialValue: _expiryDays,
-                          decoration: const InputDecoration(
-                            labelText: 'הארכת הפרסום ממועד השמירה',
-                            border: OutlineInputBorder(),
-                          ),
-                          items: const [
-                            DropdownMenuItem(value: 7, child: Text('7 ימים')),
-                            DropdownMenuItem(value: 14, child: Text('14 ימים')),
-                            DropdownMenuItem(value: 30, child: Text('30 ימים')),
-                            DropdownMenuItem(value: 60, child: Text('60 ימים')),
-                          ],
-                          onChanged: (value) =>
-                              setState(() => _expiryDays = value ?? 30),
-                        ),
-                        const SizedBox(height: 24),
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                              backgroundColor: kPrimary,
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 14)),
-                          onPressed:
-                              _saving || _preparingVideo ? null : _submit,
-                          child: _saving
-                              ? const CircularProgressIndicator(
-                                  color: Colors.white)
-                              : const Text('שמור שינויים',
-                                  style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold)),
-                        ),
-                      ]),
-                ),
-              ),
+                      ),
+                    ],
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('המחיר גמיש'),
+                      value: _negotiable,
+                      onChanged: (value) => setState(() => _negotiable = value),
+                    ),
+                    _ListingContactPreferences(
+                      inApp: _contactInApp,
+                      email: _contactEmail,
+                      phone: _contactPhone,
+                      hoursController: _contactHoursCtrl,
+                      onChanged: (key, value) => setState(() {
+                        if (key == 'in_app') _contactInApp = value;
+                        if (key == 'email') _contactEmail = value;
+                        if (key == 'phone') _contactPhone = value;
+                      }),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<int>(
+                      isExpanded: true,
+                      initialValue: _expiryDays,
+                      decoration: const InputDecoration(
+                        labelText: 'הארכת הפרסום ממועד השמירה',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: const [
+                        DropdownMenuItem(value: 7, child: Text('7 ימים')),
+                        DropdownMenuItem(value: 14, child: Text('14 ימים')),
+                        DropdownMenuItem(value: 30, child: Text('30 ימים')),
+                        DropdownMenuItem(value: 60, child: Text('60 ימים')),
+                      ],
+                      onChanged: (value) =>
+                          setState(() => _expiryDays = value ?? 30),
+                    ),
+                  ]),
             ),
     );
   }
@@ -23517,7 +23734,7 @@ String _conversationPreview(Map<String, dynamic> item) {
     case 'reaction':
       return conversationReactionPreview(item, includeActor: false);
     default:
-      return item['last_message'] as String? ?? '';
+      return chatFormattedVisibleText(item['last_message'] as String? ?? '');
   }
 }
 
@@ -24413,12 +24630,14 @@ class _ChatScreenState extends State<ChatScreen> {
   final _attachmentAnchorKey = GlobalKey();
   bool _attachmentMenuOpen = false;
   bool _attachmentPickerOpen = false;
+  bool _keyboardImageInsertionInProgress = false;
   late final StreamSubscription<void> _uploadNoticesSubscription;
   _ChatUploadDestination get _uploadDestination =>
       _ChatUploadDestination(widget.token, widget.recipient['id'].toString());
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _selectedMessageKeys = {};
-  final _msgCtrl = InlineEmojiController(isolateEmojiRuns: true);
+  final _msgCtrl =
+      InlineEmojiController(isolateEmojiRuns: true, textFormatting: true);
   final _msgHistory = _MessageInputHistory();
   final _msgFocusNode = FocusNode();
   final _expressionPanel = _ExpressionPanelController();
@@ -24998,12 +25217,15 @@ class _ChatScreenState extends State<ChatScreen> {
     final isFile = (map['file_url'] != null) ||
         (msgType != 'text' && msgType != 'group_invite' && sticker == null);
     final privateFilter = map['private_filter'];
+    final aiPresentation =
+        normalizeAiAnswerPresentation(map, map['sender_id']?.toString());
     return {
       'id': map['id'],
       if (map['client_message_id'] != null)
         'clientMessageId': map['client_message_id'],
       'text': map['body'] ?? map['file_name'] ?? '',
       'from': map['sender_id'],
+      if (aiPresentation != null) 'aiPresentation': aiPresentation,
       'time': _formatTime(map['created_at']),
       'createdAt': map['created_at']?.toString(),
       'isUnread': map['sender_id'] != widget.me?['id'] &&
@@ -25061,6 +25283,11 @@ class _ChatScreenState extends State<ChatScreen> {
       'fileName': map['file_name'],
       'educationFormId': map['education_form_id'],
       'educationResponseStatus': map['education_response_status'],
+      'educationFormTitle': map['education_form_title'],
+      'educationFormType': map['education_form_type'],
+      'educationFormCreatorId': map['education_form_creator_id'],
+      'educationFormStatus': map['education_form_status'],
+      'educationIsRecipient': map['education_is_recipient'],
       'isGroupInvite': msgType == 'group_invite',
       'isPrivateFilterEntry': msgType == 'private_filter',
       if (privateFilter is Map)
@@ -25144,10 +25371,13 @@ class _ChatScreenState extends State<ChatScreen> {
           : null;
       final isFile = fileUrl != null ||
           (fileType != null && fileType != 'text' && sticker == null);
+      final aiPresentation =
+          normalizeAiAnswerPresentation(data, data['fromUserId']?.toString());
       final incoming = <String, dynamic>{
         'id': data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
         'text': data['text'] as String? ?? fileName ?? '',
         'from': isIncoming ? widget.recipient['id'] : widget.me?['id'],
+        if (aiPresentation != null) 'aiPresentation': aiPresentation,
         'time': data['createdAt'] != null
             ? _formatTime(data['createdAt'])
             : _nowTime(),
@@ -25355,11 +25585,16 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.socket?.on('message:deleted', _messageDeletedHandler);
 
     _messageEditedHandler = (data) {
-      if (!mounted) return;
+      if (!mounted || data is! Map) return;
       setState(() {
         final idx = _messages.indexWhere((m) => m['id'] == data['id']);
         if (idx != -1) {
-          _messages[idx]['text'] = data['body'] as String;
+          _messages[idx]['text'] = data['body']?.toString() ?? '';
+          _messages[idx]['filterHidden'] = data['filter_hidden'] == true;
+          _messages[idx]['filterKept'] = data['filter_kept'] == true;
+          _messages[idx]['hiddenReason'] = data['hidden_reason'];
+          _messages[idx]['moderationStatus'] = data['moderation_status'];
+          _messages[idx]['scanReason'] = data['scan_reason'];
           _messages[idx]['isEdited'] = true;
         }
       });
@@ -25691,9 +25926,10 @@ class _ChatScreenState extends State<ChatScreen> {
     final sticker = _avielStickerById(stickerId);
     final text = sticker?.id ??
         encodeInlineEmojiText(normalizeOutgoingMessageText(_msgCtrl.text));
-    if (text.isEmpty) return;
-    if (text == encodeInlineEmojiText(
-        normalizeOutgoingMessageText(widget.initialText ?? ''))) {
+    if (text.isEmpty || (sticker == null && !hasChatComposerText(text))) return;
+    if (text ==
+        encodeInlineEmojiText(
+            normalizeOutgoingMessageText(widget.initialText ?? ''))) {
       _initialMessageHandled = true;
     }
     if (sticker == null) _msgHistory.record(text);
@@ -26599,9 +26835,10 @@ class _ChatScreenState extends State<ChatScreen> {
           final matches = query.isEmpty
               ? <Map<String, dynamic>>[]
               : _messages
-                  .where((m) => (m['text'] as String? ?? '')
-                      .toLowerCase()
-                      .contains(query))
+                  .where((m) =>
+                      chatFormattedVisibleText(m['text'] as String? ?? '')
+                          .toLowerCase()
+                          .contains(query))
                   .toList();
           return AlertDialog(
             title: const Text('חיפוש בהודעות'),
@@ -26631,7 +26868,8 @@ class _ChatScreenState extends State<ChatScreen> {
                               itemBuilder: (_, i) => ListTile(
                                 dense: true,
                                 title: InlineEmojiText(
-                                    matches[i]['text'] as String? ?? ''),
+                                    matches[i]['text'] as String? ?? '',
+                                    textFormatting: true),
                                 trailing:
                                     Text(matches[i]['time'] as String? ?? ''),
                               ),
@@ -27391,6 +27629,37 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
     await _uploadAndSend(video, video.name, 'video',
         extraFields: const {'captureKind': 'camera_video'});
+  }
+
+  Future<void> _onKeyboardImageInserted(KeyboardInsertedContent content) async {
+    if (!mounted) return;
+    if (_keyboardImageInsertionInProgress) {
+      _showError(
+          'תמונה מהמקלדת כבר בתהליך העלאה. התמונה הנוספת לא נשלחה; אפשר לבחור אותה שוב בסיום.');
+      return;
+    }
+    _keyboardImageInsertionInProgress = true;
+    final destination = _uploadDestination;
+    try {
+      final image = parseKeyboardInsertedImage(content);
+      if (!await _preparePrivateUpload('image') || !mounted) return;
+      await _uploadAndSend(
+        XFile.fromData(image.bytes,
+            name: image.fileName, mimeType: image.mimeType),
+        image.fileName,
+        'image',
+        extraFields: const {'scanReport': 'true'},
+        preparedDestination: destination,
+      );
+    } on KeyboardInsertedImageException catch (error) {
+      if (mounted) _showError(error.message);
+    } catch (_) {
+      if (mounted) {
+        _showError('לא ניתן לשלוח את התמונה מהמקלדת. אפשר לנסות שוב.');
+      }
+    } finally {
+      _keyboardImageInsertionInProgress = false;
+    }
   }
 
   Future<bool> _preparePrivateUpload(String fileType) async {
@@ -28243,6 +28512,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                         fontWeight: FontWeight.bold)),
                                 InlineEmojiText(
                                   _replyTo!['text'] as String,
+                                  textFormatting: true,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -28284,6 +28554,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                         fontWeight: FontWeight.bold)),
                                 InlineEmojiText(
                                   _editingMsg!['text'] as String? ?? '',
+                                  textFormatting: true,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -28563,8 +28834,13 @@ class _ChatScreenState extends State<ChatScreen> {
                                                             .centerRight,
                                                         child: ConstrainedBox(
                                                           constraints:
-                                                              const BoxConstraints(
-                                                            maxWidth: 760,
+                                                              BoxConstraints(
+                                                            maxWidth: msg['isFile'] !=
+                                                                        true &&
+                                                                    msg['from'] ==
+                                                                        kSafeInformationAiId
+                                                                ? 1180
+                                                                : 760,
                                                           ),
                                                           child: MessageHover(
                                                               reactionsOnChild: msg['isFile'] == true &&
@@ -28770,12 +29046,24 @@ class _ChatScreenState extends State<ChatScreen> {
                                     builder: (context, value, _) => TextField(
                                       controller: _msgCtrl,
                                       focusNode: _msgFocusNode,
+                                      contentInsertionConfiguration: !kIsWeb &&
+                                              defaultTargetPlatform ==
+                                                  TargetPlatform.android &&
+                                              _recipientAllowsImages
+                                          ? ContentInsertionConfiguration(
+                                              allowedMimeTypes:
+                                                  keyboardInsertedImageMimeTypes,
+                                              onContentInserted:
+                                                  _onKeyboardImageInserted,
+                                            )
+                                          : null,
                                       contextMenuBuilder: (context, state) =>
                                           buildImagePasteMenu(
                                               context,
                                               state,
                                               _clipboardImagePasteListener
-                                                  .pasteImage),
+                                                  .pasteImage,
+                                              formattingEnabled: true),
                                       enabled: _recipientAllowsText,
                                       textDirection:
                                           inlineEmojiDraftDirection(value.text),
@@ -28870,7 +29158,9 @@ class _ChatComposerBar extends StatelessWidget {
         listenable: Listenable.merge([controller, focusNode]),
         child: input,
         builder: (context, field) {
-          final hasText = inlineEmojiPlainText(controller.text).trim().isNotEmpty;
+          final hasText = hasChatComposerText(controller.text);
+          final formattingSelection =
+              canSendText && hasChatFormattingSelection(controller.value);
           final shortcutHeight = compact ? 24.0 : 36.0;
           final actionSize = compact ? 36.0 : 44.0;
           return Column(
@@ -28899,7 +29189,8 @@ class _ChatComposerBar extends StatelessWidget {
                             onPressed: onAttach,
                             padding: const EdgeInsets.all(8),
                             style: const ButtonStyle(
-                                tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                                tapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap),
                             constraints: const BoxConstraints.tightFor(
                                 width: 36, height: 36),
                           ),
@@ -28912,7 +29203,8 @@ class _ChatComposerBar extends StatelessWidget {
                   IconButton(
                     key: const ValueKey('chat-composer-action'),
                     tooltip: hasText ? 'שלח הודעה' : 'הקלט הודעה קולית',
-                    onPressed: hasText ? (canSendText ? onSend : null) : onRecord,
+                    onPressed:
+                        hasText ? (canSendText ? onSend : null) : onRecord,
                     style: IconButton.styleFrom(
                       backgroundColor: kPrimary,
                       disabledBackgroundColor: Colors.grey,
@@ -28944,7 +29236,8 @@ class _ChatComposerBar extends StatelessWidget {
                             onPressed: onStickers,
                             padding: EdgeInsets.all(compact ? 3 : 8),
                             style: const ButtonStyle(
-                                tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                                tapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap),
                             constraints: BoxConstraints.tightFor(
                                 width: 36, height: shortcutHeight),
                           ),
@@ -28956,10 +29249,31 @@ class _ChatComposerBar extends StatelessWidget {
                             onPressed: onEmoji,
                             padding: EdgeInsets.all(compact ? 3 : 8),
                             style: const ButtonStyle(
-                                tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                                tapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap),
                             constraints: BoxConstraints.tightFor(
                                 width: 36, height: shortcutHeight),
                           ),
+                          if (formattingSelection) ...[
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Align(
+                                alignment: Alignment.centerRight,
+                                child: SizedBox(
+                                  width: ChatFormattingToolbar.preferredWidth(
+                                      compact: compact),
+                                  child: ChatFormattingToolbar(
+                                    key: const ValueKey(
+                                        'chat-formatting-toolbar'),
+                                    controller: controller,
+                                    focusNode: focusNode,
+                                    compact: compact,
+                                    enabled: canSendText,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ],
                       )
                     : null,
@@ -30127,11 +30441,12 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
                 Expanded(
                     child: Column(mainAxisSize: MainAxisSize.min, children: [
                   AudioVisualizer(
-                    key: const ValueKey('voice-playback-visualizer'),
-                    value: totalMs > 0
-                        ? shownPosition.inMilliseconds / totalMs : 0,
-                    playing: _playing && !_loading && !_loadFailed,
-                    color: kPrimary),
+                      key: const ValueKey('voice-playback-visualizer'),
+                      value: totalMs > 0
+                          ? shownPosition.inMilliseconds / totalMs
+                          : 0,
+                      playing: _playing && !_loading && !_loadFailed,
+                      color: kPrimary),
                   Directionality(
                       textDirection: TextDirection.ltr,
                       child: Slider(
@@ -30543,6 +30858,7 @@ class _GroupDeliverySummary extends StatelessWidget {
     ].join('\n');
     return Align(
       alignment: Alignment.centerRight,
+      widthFactor: 1,
       child: Tooltip(
         message: details,
         waitDuration: const Duration(milliseconds: 250),
@@ -30813,8 +31129,7 @@ Widget _chatMessageStatusIcon(Map<String, dynamic> message, bool isMe) {
     case 'pending_scan':
       return const Tooltip(
         message: 'בהמתנה לבדיקת תוכן לא ראוי',
-        child:
-            Icon(Icons.hourglass_top, size: 14, color: Colors.orangeAccent),
+        child: Icon(Icons.hourglass_top, size: 14, color: Colors.orangeAccent),
       );
     case 'awaiting_contact_approval':
       return const Tooltip(
@@ -32024,7 +32339,6 @@ class _MessageBubble extends StatelessWidget {
 
   Alignment get _messageAlignment => Alignment.centerRight;
 
-
   @override
   Widget build(BuildContext context) {
     final isFile = message['isFile'] == true;
@@ -32201,6 +32515,9 @@ class _MessageBubble extends StatelessWidget {
     final rawText = message['text'] as String? ?? '';
     final sharedContact = !isFile ? _sharedContactFromText(rawText) : null;
     final sharedUrl = !isFile ? _firstHttpUrl(rawText) : null;
+    final isSafeAnswer = !isFile && message['from'] == kSafeInformationAiId;
+    final aiPresentation =
+        normalizeAiAnswerPresentation(message, message['from']?.toString());
     final guideExternalUrls = !isFile && message['from'] == kSafeInformationAiId
         ? RegExp(r'https://[^\s<>]+')
             .allMatches(rawText)
@@ -32244,10 +32561,9 @@ class _MessageBubble extends StatelessWidget {
             messageDraftRegex.firstMatch(rawText)?.group(1))
         : null;
     // טקסט נקי ללא שורת הקישור
-    final displayTextWithInternalLink =
-        sharedContact != null
-            ? ''
-            : locationMessageDisplayText(rawText).replaceAll(linkRegex, '').trim();
+    final displayTextWithInternalLink = sharedContact != null
+        ? ''
+        : locationMessageDisplayText(rawText).replaceAll(linkRegex, '').trim();
     final displayText = displayTextWithInternalLink
         .replaceAll(guideAppLinkRegex, '')
         .replaceAll(removedScreenshotLinkRegex, '')
@@ -32301,12 +32617,13 @@ class _MessageBubble extends StatelessWidget {
             ? EdgeInsets.zero
             : const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.72,
+          maxWidth:
+              MediaQuery.of(context).size.width * (isSafeAnswer ? 0.96 : 0.72),
         ),
         decoration: bareObject
             ? null
             : BoxDecoration(
-                color: kIncoming,
+                color: isSafeAnswer ? Colors.white : kIncoming,
                 borderRadius: BorderRadius.only(
                   topLeft: const Radius.circular(6),
                   topRight: const Radius.circular(6),
@@ -32353,6 +32670,7 @@ class _MessageBubble extends StatelessWidget {
                   ),
                   child: InlineEmojiText(
                     (message['replyTo'] as Map)['text'] as String,
+                    textFormatting: true,
                     style: TextStyle(fontSize: 12, color: timeColor),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -32617,13 +32935,15 @@ class _MessageBubble extends StatelessWidget {
               SafeInformationText(
                 displayText,
                 style: const TextStyle(
-                    fontSize: 14, height: 1.45, color: textColor),
+                    fontSize: 15, height: 1.6, color: textColor),
+                presentation: aiPresentation,
                 onOpenUrl: (url) => _confirmAndOpenExternalLink(context, url),
               )
             else
               InlineEmojiText(
                 displayText,
                 messageEmojis: true,
+                textFormatting: true,
                 style: TextStyle(fontSize: 14, height: 1.45, color: textColor),
                 textDirection: TextDirection.rtl,
                 textAlign: TextAlign.right,
@@ -32647,12 +32967,12 @@ class _MessageBubble extends StatelessWidget {
               _DocumentClassificationSummary(message: message),
             ],
 
-            if (sharedUrl != null) ...[
+            if (sharedUrl != null && aiPresentation == null) ...[
               const SizedBox(height: 8),
               _WebsiteLinkPreview(sharedUrl, token, messageText: rawText),
             ],
 
-            if (guideExternalUrls.length > 1) ...[
+            if (guideExternalUrls.length > 1 && aiPresentation == null) ...[
               const SizedBox(height: 7),
               Wrap(
                 spacing: 6,
@@ -34089,9 +34409,10 @@ class _GroupsScreenState extends State<GroupsScreen> {
                         final memberCount = g['member_count'] ?? 0;
                         final lastMsg = g['last_message_type'] == 'reaction'
                             ? conversationReactionPreview(g)
-                            : g['lastMsg'] as String? ??
-                                g['description'] as String? ??
-                                '';
+                            : chatFormattedVisibleText(
+                                g['lastMsg'] as String? ??
+                                    g['description'] as String? ??
+                                    '');
                         return Container(
                           color: widget.selectedGroupId == g['id']
                               ? const Color(0xFFE9EDEF)
@@ -34280,12 +34601,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   final _attachmentAnchorKey = GlobalKey();
   bool _attachmentMenuOpen = false;
   bool _attachmentPickerOpen = false;
+  bool _keyboardImageInsertionInProgress = false;
   late final StreamSubscription<void> _uploadNoticesSubscription;
   _ChatUploadDestination get _uploadDestination =>
       _ChatUploadDestination(widget.token, _groupId);
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _selectedMessageKeys = {};
-  final _msgCtrl = InlineEmojiController(isolateEmojiRuns: true);
+  final _msgCtrl =
+      InlineEmojiController(isolateEmojiRuns: true, textFormatting: true);
   final _msgHistory = _MessageInputHistory();
   final _msgFocusNode = FocusNode();
   final _expressionPanel = _ExpressionPanelController();
@@ -34452,7 +34775,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   bool get _groupAllowsText => _groupReceivingFilter?['text'] != false;
   bool get _groupAllowsVideo => _groupReceivingFilter?['video'] != false;
   bool get _canSendToGroup =>
-      _isAdmin || widget.group['send_permission'] != 'admin';
+      _myStatus == 'member' &&
+      (_isAdmin || widget.group['send_permission'] != 'admin');
+  bool get _canCreateEducationForms => _canSendToGroup && _groupAllowsText;
   bool get _groupAllowsImages =>
       _groupReceivingFilter == null ||
       const ['nonHumanImages', 'men', 'women', 'children']
@@ -34563,8 +34888,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         extraFields: const {'clipboardPaste': 'true'},
       ),
     );
-    _isAdmin = widget.group['role'] == 'admin' &&
-        widget.group['status'] != 'pending';
+    _isAdmin =
+        widget.group['role'] == 'admin' && widget.group['status'] != 'pending';
     _myStatus = widget.group['status'] as String? ?? 'member';
     _reconcileGroupMembership();
     _loadAcceptedFilterNotice();
@@ -34816,7 +35141,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         );
         if (res.statusCode == 200) {
           final result = jsonDecode(res.body) as Map<String, dynamic>;
-          if (result['alreadyMember'] != true && result['alreadyPending'] != true) {
+          if (result['alreadyMember'] != true &&
+              result['alreadyPending'] != true) {
             invited++;
           }
         }
@@ -34836,9 +35162,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final sticker =
         map['type'] == 'sticker' ? _avielStickerById(map['body']) : null;
     final isFile = map['file_url'] != null || map['file_name'] != null;
+    final aiPresentation =
+        normalizeAiAnswerPresentation(map, map['sender_id']?.toString());
     return {
       'id': map['id'],
       'senderId': map['sender_id'],
+      if (aiPresentation != null) 'aiPresentation': aiPresentation,
       'text': map['body'] ?? '',
       'senderName': map['sender_name'] ?? '',
       'time': _formatTime(map['created_at']),
@@ -34866,6 +35195,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       if (sticker != null) 'stickerId': sticker.id,
       'educationFormId': map['education_form_id'],
       'educationResponseStatus': map['education_response_status'],
+      'educationFormTitle': map['education_form_title'],
+      'educationFormType': map['education_form_type'],
+      'educationFormCreatorId': map['education_form_creator_id'],
+      'educationFormStatus': map['education_form_status'],
+      'educationIsRecipient': map['education_is_recipient'],
       if (map['reply_to_id'] != null)
         'replyTo': {
           'id': map['reply_to_id'],
@@ -35151,8 +35485,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             }),
           );
           if (res.statusCode == 200) {
-            final matched = (jsonDecode(res.body) as List)
-                .cast<Map<String, dynamic>>();
+            final matched =
+                (jsonDecode(res.body) as List).cast<Map<String, dynamic>>();
             contactUserIds = matched.map((u) => u['id'] as String).toSet();
           }
         } catch (_) {}
@@ -35183,13 +35517,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             )['email'] = entry.key;
           }
         }
-        unregistered =
-            byName.values
-                .where((c) => c['phone'] != null || c['email'] != null)
-                .toList()
-              ..sort(
-                (a, b) => (a['name'] as String).compareTo(b['name'] as String),
-              );
+        unregistered = byName.values
+            .where((c) => c['phone'] != null || c['email'] != null)
+            .toList()
+          ..sort(
+            (a, b) => (a['name'] as String).compareTo(b['name'] as String),
+          );
       }
     }
 
@@ -35212,12 +35545,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setS) {
           final query = searchCtrl.text.toLowerCase();
-          final filteredReg = allUsers
-              .where((u) => _matchesQuery(u, query))
-              .toList();
-          final filteredUnreg = unregistered
-              .where((u) => _matchesQuery(u, query))
-              .toList();
+          final filteredReg =
+              allUsers.where((u) => _matchesQuery(u, query)).toList();
+          final filteredUnreg =
+              unregistered.where((u) => _matchesQuery(u, query)).toList();
 
           return AlertDialog(
             title: const Text('הזמן לקבוצה'),
@@ -35277,15 +35608,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                   final alreadyMember = memberIds.contains(
                                     userId,
                                   );
-                                  final alreadyInvited = _pendingInviteIds
-                                      .contains(userId);
+                                  final alreadyInvited =
+                                      _pendingInviteIds.contains(userId);
                                   final unavailable =
                                       alreadyMember || alreadyInvited;
                                   final statusLabel = alreadyMember
                                       ? 'כבר חבר בקבוצה'
                                       : alreadyInvited
-                                      ? 'הוזמן – ממתין לאישור'
-                                      : null;
+                                          ? 'הוזמן – ממתין לאישור'
+                                          : null;
                                   final isContact = contactUserIds.contains(
                                     userId,
                                   );
@@ -35310,14 +35641,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                             ),
                                           )
                                         : phone.isNotEmpty
-                                        ? Text(
-                                            phone,
-                                            style: const TextStyle(
-                                              fontSize: 11,
-                                              color: kSubtext,
-                                            ),
-                                          )
-                                        : null,
+                                            ? Text(
+                                                phone,
+                                                style: const TextStyle(
+                                                  fontSize: 11,
+                                                  color: kSubtext,
+                                                ),
+                                              )
+                                            : null,
                                     trailing: Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
@@ -35335,24 +35666,25 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                           onChanged: unavailable
                                               ? null
                                               : (_) => setS(() {
-                                                  if (isSelected) {
-                                                    selectedIds.remove(userId);
-                                                  } else {
-                                                    selectedIds.add(userId);
-                                                  }
-                                                }),
+                                                    if (isSelected) {
+                                                      selectedIds
+                                                          .remove(userId);
+                                                    } else {
+                                                      selectedIds.add(userId);
+                                                    }
+                                                  }),
                                         ),
                                       ],
                                     ),
                                     onTap: unavailable
                                         ? null
                                         : () => setS(() {
-                                            if (isSelected) {
-                                              selectedIds.remove(userId);
-                                            } else {
-                                              selectedIds.add(userId);
-                                            }
-                                          }),
+                                              if (isSelected) {
+                                                selectedIds.remove(userId);
+                                              } else {
+                                                selectedIds.add(userId);
+                                              }
+                                            }),
                                   );
                                 }),
                               ],
@@ -35805,9 +36137,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final sticker =
         map['type'] == 'sticker' ? _avielStickerById(map['body']) : null;
     final isFile = map['file_url'] != null || map['file_name'] != null;
+    final aiPresentation =
+        normalizeAiAnswerPresentation(map, map['sender_id']?.toString());
     return {
       'id': map['id'],
       'senderId': map['sender_id'],
+      if (aiPresentation != null) 'aiPresentation': aiPresentation,
       'text': map['body'] ?? '',
       'senderName': map['sender_name'] ?? '',
       'time': _formatTime(map['created_at']),
@@ -35856,6 +36191,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'educationFormId': map['education_form_id'],
       'educationResponseStatus': map['education_response_status'],
       'educationFormStatus': map['education_form_status'],
+      'educationFormTitle': map['education_form_title'],
+      'educationFormType': map['education_form_type'],
+      'educationFormCreatorId': map['education_form_creator_id'],
+      'educationIsRecipient': map['education_is_recipient'],
       if (map['reply_to_id'] != null)
         'replyTo': {
           'id': map['reply_to_id'],
@@ -35943,9 +36282,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final sticker = fileType == 'sticker'
           ? _avielStickerById(data['stickerId'] ?? data['text'])
           : null;
+      final aiPresentation =
+          normalizeAiAnswerPresentation(data, data['fromUserId']?.toString());
       final incoming = <String, dynamic>{
         'id': data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
         'senderId': data['fromUserId'],
+        if (aiPresentation != null) 'aiPresentation': aiPresentation,
         'text': data['text'] as String? ?? fileName ?? '',
         'senderName': data['fromName'] as String? ?? '',
         'time': data['createdAt'] != null
@@ -35963,6 +36305,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         if (sticker != null) 'stickerId': sticker.id,
         'educationFormId': data['formId'],
         'educationResponseStatus': data['educationResponseStatus'],
+        'educationFormTitle': data['educationFormTitle'],
+        'educationFormType': data['educationFormType'],
+        'educationFormCreatorId': data['educationFormCreatorId'],
+        'educationFormStatus': data['educationFormStatus'],
         if (data['classification'] != null)
           'classification': data['classification'],
         if (data['deliverySummary'] != null)
@@ -36003,6 +36349,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _isTyping = false;
       });
       _scrollToBottom();
+      if (incoming['educationFormId'] != null) {
+        // History supplies this viewer's participation and response status.
+        _serverMessagesFingerprint = null;
+        unawaited(_loadMessages(silent: true));
+      }
       if (recoveredFailedIndex != -1) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('הסריקה הושלמה והתמונה נשלחה'),
@@ -36144,13 +36495,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     widget.socket?.on('group:member_joined', _groupMemberJoinedSocketHandler);
 
     _messageEditedSocketHandler = (data) {
-      if (!mounted) return;
-      final gid = data['groupId'] as String?;
+      if (!mounted || data is! Map) return;
+      final gid = data['groupId']?.toString();
       if (gid != null && gid != _groupId) return;
       setState(() {
         final idx = _messages.indexWhere((m) => m['id'] == data['id']);
         if (idx != -1) {
-          _messages[idx]['text'] = data['body'] as String;
+          _messages[idx]['text'] = data['body']?.toString() ?? '';
+          _messages[idx]['filterHidden'] = data['filter_hidden'] == true;
+          _messages[idx]['filterKept'] = data['filter_kept'] == true;
+          _messages[idx]['hiddenReason'] = data['hidden_reason'];
+          _messages[idx]['moderationStatus'] = data['moderation_status'];
+          _messages[idx]['scanReason'] = data['scan_reason'];
           _messages[idx]['isEdited'] = true;
         }
       });
@@ -36168,6 +36524,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           _messages[index]['fileType'] = 'text';
           _messages[index]['educationFormId'] = null;
           _messages[index]['educationFormStatus'] = null;
+          _messages[index]['educationFormTitle'] = null;
+          _messages[index]['educationFormType'] = null;
+          _messages[index]['educationFormCreatorId'] = null;
+          _messages[index]['educationIsRecipient'] = null;
         }
       });
     };
@@ -36339,7 +36699,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final sticker = _avielStickerById(stickerId);
     final text = sticker?.id ??
         encodeInlineEmojiText(normalizeOutgoingMessageText(_msgCtrl.text));
-    if (text.isEmpty) return;
+    if (text.isEmpty || (sticker == null && !hasChatComposerText(text))) return;
     if (sticker == null) _msgHistory.record(text);
 
     // Edit mode
@@ -36847,7 +37207,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         videoAllowed: _groupAllowsVideo,
         textAllowed: _groupAllowsText,
         blockedLabel: 'חסום בסינון הקבוצה',
-        allowEducationForms: _isAdmin,
+        allowEducationForms: _canCreateEducationForms,
         allowPaste: !kIsWeb && defaultTargetPlatform == TargetPlatform.android,
       );
       if (!mounted || action == null) return;
@@ -36880,7 +37240,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         case ChatAttachmentAction.approvalForm:
         case ChatAttachmentAction.signatureForm:
         case ChatAttachmentAction.surveyForm:
-          if (!_isAdmin) return;
+          if (!await _ensureCanSendToGroup()) return;
+          if (!mounted || !_canCreateEducationForms) return;
           final created = await Navigator.push<bool>(
               context,
               MaterialPageRoute(
@@ -37248,6 +37609,44 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (!mounted) return;
     await _uploadGroupFile(video, video.name, 'video',
         extraFields: const {'captureKind': 'camera_video'});
+  }
+
+  Future<void> _onKeyboardImageInserted(KeyboardInsertedContent content) async {
+    if (!mounted) return;
+    if (_keyboardImageInsertionInProgress) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text(
+            'תמונה מהמקלדת כבר בתהליך העלאה. התמונה הנוספת לא נשלחה; אפשר לבחור אותה שוב בסיום.'),
+      ));
+      return;
+    }
+    _keyboardImageInsertionInProgress = true;
+    final destination = _uploadDestination;
+    try {
+      final image = parseKeyboardInsertedImage(content);
+      if (!await _prepareGroupUpload('image') || !mounted) return;
+      await _uploadGroupFile(
+        XFile.fromData(image.bytes,
+            name: image.fileName, mimeType: image.mimeType),
+        image.fileName,
+        'image',
+        extraFields: const {'scanReport': 'true'},
+        preparedDestination: destination,
+      );
+    } on KeyboardInsertedImageException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.message)));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('לא ניתן לשלוח את התמונה מהמקלדת. אפשר לנסות שוב.'),
+        ));
+      }
+    } finally {
+      _keyboardImageInsertionInProgress = false;
+    }
   }
 
   Future<bool> _prepareGroupUpload(String fileType) async {
@@ -38232,12 +38631,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             groupId: _groupId,
             groupName: widget.group['name'] as String? ?? 'קבוצה',
             isAdmin: _isAdmin,
+            canCreate: _canCreateEducationForms,
             socket: widget.socket,
           ),
         ),
       );
 
   Future<void> _openEducationAnnouncement(Map<String, dynamic> message) async {
+    if (message['educationIsRecipient'] == false &&
+        !_isAdmin &&
+        message['isMe'] != true &&
+        !(message['educationFormCreatorId'] != null &&
+            message['educationFormCreatorId'] == widget.me?['id'])) {
+      return;
+    }
     final directFormId = message['educationFormId']?.toString();
     if (directFormId != null && directFormId.isNotEmpty) {
       await Navigator.push(
@@ -38302,9 +38709,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           final matches = query.isEmpty
               ? <Map<String, dynamic>>[]
               : _messages
-                  .where((m) => (m['text'] as String? ?? '')
-                      .toLowerCase()
-                      .contains(query))
+                  .where((m) =>
+                      chatFormattedVisibleText(m['text'] as String? ?? '')
+                          .toLowerCase()
+                          .contains(query))
                   .toList();
           return AlertDialog(
             title: const Text('חיפוש בהודעות הקבוצה'),
@@ -38334,7 +38742,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                               itemBuilder: (_, i) => ListTile(
                                 dense: true,
                                 title: InlineEmojiText(
-                                    matches[i]['text'] as String? ?? ''),
+                                    matches[i]['text'] as String? ?? '',
+                                    textFormatting: true),
                                 subtitle: Text(
                                     matches[i]['senderName'] as String? ?? ''),
                                 trailing:
@@ -39075,7 +39484,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                           key: ValueKey(msg['id']),
                                           text: msg['text'] as String,
                                           createdAt: DateTime.tryParse(
-                                              msg['createdAt']?.toString() ?? ''),
+                                              msg['createdAt']?.toString() ??
+                                                  ''),
                                           summary: chatUploadBatchSummary(
                                               msg, _messages));
                                     }
@@ -39225,8 +39635,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                         ? _firstHttpUrl(groupText)
                                         : null;
                                     final isEducationAnnouncement =
-                                        (msg['text'] as String? ?? '')
-                                            .startsWith('📋 ');
+                                        isEducationFormAnnouncement(msg);
+                                    final isSafeAnswer = msg['isFile'] !=
+                                            true &&
+                                        !isEducationAnnouncement &&
+                                        msg['senderId'] == kSafeInformationAiId;
+                                    final aiPresentation =
+                                        normalizeAiAnswerPresentation(
+                                            msg, msg['senderId']?.toString());
                                     final isFilterUpdateAnnouncement = groupText
                                         .startsWith('🛡️ סינון הקבוצה עודכן');
                                     final filterUpdateDetails =
@@ -39237,38 +39653,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                 .join('\n')
                                                 .trim()
                                             : '';
-                                    final educationStatus =
-                                        msg['educationResponseStatus']
-                                            ?.toString();
-                                    final educationFormClosed =
-                                        msg['educationFormStatus'] == 'closed';
-                                    final educationStatusLabel =
-                                        educationFormClosed
-                                            ? 'הטופס נסגר'
-                                            : _isAdmin
-                                                ? 'ניהול מסמך'
-                                                : educationStatus == 'declined'
-                                                    ? 'לא אושר'
-                                                    : educationStatus ==
-                                                                'approved' ||
-                                                            educationStatus ==
-                                                                'completed'
-                                                        ? 'בוצע'
-                                                        : 'ממתין לפעולה';
-                                    final educationStatusColor =
-                                        educationFormClosed
-                                            ? Colors.blueGrey.shade700
-                                            : _isAdmin
-                                                ? kPrimary
-                                                : educationStatus == 'declined'
-                                                    ? Colors.red.shade700
-                                                    : educationStatus ==
-                                                                'approved' ||
-                                                            educationStatus ==
-                                                                'completed'
-                                                        ? Colors.green.shade700
-                                                        : Colors
-                                                            .orange.shade800;
+                                    final canManageEducationMessage =
+                                        _isAdmin ||
+                                            isMe ||
+                                            (msg['educationFormCreatorId'] !=
+                                                    null &&
+                                                msg['educationFormCreatorId'] ==
+                                                    widget.me?['id']);
                                     final firstUnreadIndex =
                                         _messages.indexWhere((message) =>
                                             message['isUnread'] == true);
@@ -39520,7 +39911,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                         .only(
                                                                         bottom:
                                                                             6),
-                                                                    padding: msg['isFile'] == true ||
+                                                                    padding: isEducationAnnouncement ||
+                                                                            msg['isFile'] ==
+                                                                                true ||
                                                                             avielSticker !=
                                                                                 null
                                                                         ? EdgeInsets
@@ -39533,35 +39926,33 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                                 5),
                                                                     constraints:
                                                                         BoxConstraints(
-                                                                      maxWidth: msg['fileUrl'] !=
-                                                                              null
-                                                                          ? math.min(
-                                                                              330,
-                                                                              MediaQuery.of(context).size.width *
-                                                                                  0.86)
-                                                                          : MediaQuery.of(context).size.width *
-                                                                              0.75,
+                                                                      maxWidth: isEducationAnnouncement
+                                                                          ? math.min(380, MediaQuery.sizeOf(context).width * .86)
+                                                                          : msg['fileUrl'] != null
+                                                                              ? math.min(330, MediaQuery.sizeOf(context).width * .86)
+                                                                              : MediaQuery.sizeOf(context).width * (isSafeAnswer ? .96 : .75),
                                                                     ),
-                                                                    decoration: msg['isFile'] ==
-                                                                                true ||
-                                                                            avielSticker !=
-                                                                                null
-                                                                        ? null
-                                                                        : BoxDecoration(
-                                                                            color:
-                                                                                kIncoming,
+                                                                    decoration: isEducationAnnouncement
+                                                                        ? BoxDecoration(
                                                                             borderRadius:
-                                                                                BorderRadius.circular(6),
+                                                                                BorderRadius.circular(22),
                                                                             border: _selectedMessageKeys.contains(_selectionKey(msg))
                                                                                 ? Border.all(color: kPrimary, width: 3)
                                                                                 : null,
-                                                                            boxShadow: [
-                                                                              BoxShadow(
-                                                                                color: Colors.black.withValues(alpha: 0.05),
-                                                                                blurRadius: 3,
-                                                                              )
-                                                                            ],
-                                                                          ),
+                                                                          )
+                                                                        : msg['isFile'] == true || avielSticker != null
+                                                                            ? null
+                                                                            : BoxDecoration(
+                                                                                color: isSafeAnswer ? Colors.white : kIncoming,
+                                                                                borderRadius: BorderRadius.circular(6),
+                                                                                border: _selectedMessageKeys.contains(_selectionKey(msg)) ? Border.all(color: kPrimary, width: 3) : null,
+                                                                                boxShadow: [
+                                                                                  BoxShadow(
+                                                                                    color: Colors.black.withValues(alpha: 0.05),
+                                                                                    blurRadius: 3,
+                                                                                  )
+                                                                                ],
+                                                                              ),
                                                                     child:
                                                                         Column(
                                                                       mainAxisSize:
@@ -39806,59 +40197,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                             ),
                                                                           )
                                                                         else if (isEducationAnnouncement)
-                                                                          InkWell(
-                                                                            onTap: () =>
+                                                                          EducationFormMessageCard(
+                                                                            message:
+                                                                                msg,
+                                                                            canManage:
+                                                                                canManageEducationMessage,
+                                                                            onOpen: () =>
                                                                                 _openEducationAnnouncement(msg),
-                                                                            borderRadius:
-                                                                                BorderRadius.circular(8),
-                                                                            child:
-                                                                                Padding(
-                                                                              padding: const EdgeInsets.symmetric(vertical: 4),
-                                                                              child: Column(
-                                                                                crossAxisAlignment: CrossAxisAlignment.end,
-                                                                                children: [
-                                                                                  Row(
-                                                                                    mainAxisSize: MainAxisSize.min,
-                                                                                    children: [
-                                                                                      const Icon(Icons.fact_check_outlined, color: kPrimary),
-                                                                                      const SizedBox(width: 8),
-                                                                                      Flexible(
-                                                                                        child: Text(
-                                                                                          msg['text'] as String? ?? '',
-                                                                                          style: const TextStyle(fontSize: 15, height: 1.4, fontWeight: FontWeight.w600),
-                                                                                          textDirection: TextDirection.rtl,
-                                                                                        ),
-                                                                                      ),
-                                                                                    ],
-                                                                                  ),
-                                                                                  const SizedBox(height: 8),
-                                                                                  Row(
-                                                                                    mainAxisSize: MainAxisSize.min,
-                                                                                    children: [
-                                                                                      const Icon(Icons.touch_app, size: 17, color: kPrimary),
-                                                                                      const SizedBox(width: 4),
-                                                                                      const Text('לחץ לפתיחת המסמך', style: TextStyle(color: kPrimary, fontWeight: FontWeight.bold)),
-                                                                                      const SizedBox(width: 12),
-                                                                                      Container(
-                                                                                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
-                                                                                        decoration: BoxDecoration(
-                                                                                          color: educationStatusColor.withValues(alpha: .12),
-                                                                                          borderRadius: BorderRadius.circular(14),
-                                                                                        ),
-                                                                                        child: Text(
-                                                                                          educationStatusLabel,
-                                                                                          style: TextStyle(
-                                                                                            color: educationStatusColor,
-                                                                                            fontWeight: FontWeight.bold,
-                                                                                            fontSize: 12,
-                                                                                          ),
-                                                                                        ),
-                                                                                      ),
-                                                                                    ],
-                                                                                  ),
-                                                                                ],
-                                                                              ),
-                                                                            ),
                                                                           )
                                                                         else if (sharedContact !=
                                                                             null)
@@ -39868,10 +40213,22 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                                 widget.token,
                                                                             me: widget.me,
                                                                           )
+                                                                        else if (isSafeAnswer)
+                                                                          SafeInformationText(
+                                                                            locationMessageDisplayText(groupText),
+                                                                            style:
+                                                                                const TextStyle(fontSize: 15, height: 1.6),
+                                                                            presentation:
+                                                                                aiPresentation,
+                                                                            onOpenUrl: (url) =>
+                                                                                _confirmAndOpenExternalLink(context, url),
+                                                                          )
                                                                         else
                                                                           InlineEmojiText(
                                                                             locationMessageDisplayText(groupText),
                                                                             messageEmojis:
+                                                                                true,
+                                                                            textFormatting:
                                                                                 true,
                                                                             style:
                                                                                 const TextStyle(fontSize: 15, height: 1.4),
@@ -39879,7 +40236,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                                 TextDirection.rtl,
                                                                           ),
                                                                         if (sharedUrl !=
-                                                                            null) ...[
+                                                                                null &&
+                                                                            aiPresentation ==
+                                                                                null) ...[
                                                                           const SizedBox(
                                                                               height: 8),
                                                                           _WebsiteLinkPreview(
@@ -39953,6 +40312,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                         fontWeight: FontWeight.bold)),
                                 InlineEmojiText(
                                     _editingMsg!['text'] as String? ?? '',
+                                    textFormatting: true,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
@@ -40031,12 +40391,25 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                       builder: (context, value, _) => TextField(
                                         controller: _msgCtrl,
                                         focusNode: _msgFocusNode,
+                                        contentInsertionConfiguration:
+                                            !kIsWeb &&
+                                                    defaultTargetPlatform ==
+                                                        TargetPlatform.android &&
+                                                    _groupAllowsImages
+                                                ? ContentInsertionConfiguration(
+                                                    allowedMimeTypes:
+                                                        keyboardInsertedImageMimeTypes,
+                                                    onContentInserted:
+                                                        _onKeyboardImageInserted,
+                                                  )
+                                                : null,
                                         contextMenuBuilder: (context, state) =>
                                             buildImagePasteMenu(
                                                 context,
                                                 state,
                                                 _clipboardImagePasteListener
-                                                    .pasteImage),
+                                                    .pasteImage,
+                                                formattingEnabled: true),
                                         textDirection:
                                             inlineEmojiDraftDirection(
                                                 value.text),
@@ -48339,7 +48712,7 @@ class EducationFormsScreen extends StatefulWidget {
   final String token;
   final String groupId;
   final String groupName;
-  final bool isAdmin;
+  final bool isAdmin, canCreate;
   final io.Socket? socket;
   const EducationFormsScreen({
     super.key,
@@ -48347,6 +48720,7 @@ class EducationFormsScreen extends StatefulWidget {
     required this.groupId,
     required this.groupName,
     required this.isAdmin,
+    this.canCreate = false,
     this.socket,
   });
 
@@ -48359,6 +48733,9 @@ class _EducationFormsScreenState extends State<EducationFormsScreen> {
   String? _error;
   List<Map<String, dynamic>> _forms = [];
   String _query = '';
+  bool? _serverCanCreate;
+  bool get _canCreate =>
+      _serverCanCreate ?? (widget.canCreate || widget.isAdmin);
   Timer? _onlineRefreshTimer;
 
   @override
@@ -48401,6 +48778,8 @@ class _EducationFormsScreenState extends State<EducationFormsScreen> {
       if (!mounted) return;
       setState(() {
         _forms = (data['forms'] as List).cast<Map<String, dynamic>>();
+        _serverCanCreate =
+            data['canCreate'] is bool ? data['canCreate'] as bool : null;
         _loading = false;
       });
     } catch (e) {
@@ -48414,16 +48793,16 @@ class _EducationFormsScreenState extends State<EducationFormsScreen> {
   }
 
   String _kind(Map<String, dynamic> form) => switch (form['form_type']) {
-    'signature' => 'מסמך לחתימה',
-    'survey' => 'סקר',
-    _ => 'אישור',
-  };
+        'signature' => 'מסמך לחתימה',
+        'survey' => 'סקר',
+        _ => 'אישור',
+      };
 
   IconData _icon(Map<String, dynamic> form) => switch (form['form_type']) {
-    'signature' => Icons.draw_outlined,
-    'survey' => Icons.poll_outlined,
-    _ => Icons.fact_check_outlined,
-  };
+        'signature' => Icons.draw_outlined,
+        'survey' => Icons.poll_outlined,
+        _ => Icons.fact_check_outlined,
+      };
 
   String _date(dynamic value) {
     final date = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
@@ -48432,6 +48811,9 @@ class _EducationFormsScreenState extends State<EducationFormsScreen> {
   }
 
   Future<void> _create() async {
+    if (!_canCreate) {
+      return;
+    }
     final created = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
@@ -48448,9 +48830,8 @@ class _EducationFormsScreenState extends State<EducationFormsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final visibleForms = _forms
-        .where((form) => educationFormMatches(form, _query))
-        .toList();
+    final visibleForms =
+        _forms.where((form) => educationFormMatches(form, _query)).toList();
     return Scaffold(
       appBar: AppBar(
         title: Text('אישורים וסקרים • ${widget.groupName}'),
@@ -48459,7 +48840,7 @@ class _EducationFormsScreenState extends State<EducationFormsScreen> {
           IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
         ],
       ),
-      floatingActionButton: widget.isAdmin
+      floatingActionButton: _canCreate
           ? FloatingActionButton.extended(
               onPressed: _create,
               backgroundColor: kPrimary,
@@ -48470,171 +48851,186 @@ class _EducationFormsScreenState extends State<EducationFormsScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-          ? Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(_error!, textAlign: TextAlign.center),
-                    const SizedBox(height: 12),
-                    ElevatedButton(
-                      onPressed: _load,
-                      child: const Text('נסה שוב'),
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(_error!, textAlign: TextAlign.center),
+                        const SizedBox(height: 12),
+                        ElevatedButton(
+                          onPressed: _load,
+                          child: const Text('נסה שוב'),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              ),
-            )
-          : _forms.isEmpty
-          ? Center(
-              child: Padding(
-                padding: const EdgeInsets.all(30),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.assignment_outlined,
-                      size: 72,
-                      color: Colors.blueGrey.shade200,
-                    ),
-                    const SizedBox(height: 14),
-                    const Text(
-                      'אין עדיין אישורים או סקרים',
-                      style: TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    if (widget.isAdmin)
-                      const Padding(
-                        padding: EdgeInsets.only(top: 8),
-                        child: Text('לחץ על „יצירה חדשה” כדי להתחיל'),
-                      ),
-                  ],
-                ),
-              ),
-            )
-          : Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: TextField(
-                    decoration: const InputDecoration(
-                      labelText: 'חיפוש סקרים, אישורים ומסמכים',
-                      prefixIcon: Icon(Icons.search),
-                    ),
-                    onChanged: (value) => setState(() => _query = value),
                   ),
-                ),
-                if (visibleForms.isEmpty)
-                  const Expanded(child: Center(child: Text('לא נמצאו טפסים')))
-                else
-                  Expanded(
-                    child: RefreshIndicator(
-                      onRefresh: _load,
-                      child: ListView.builder(
-                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 90),
-                        itemCount: visibleForms.length,
-                        itemBuilder: (_, index) {
-                          final form = visibleForms[index];
-                          final answered = form['my_response_status'] != null;
-                          final closed = form['status'] == 'closed';
-                          final responses = form['response_count'] ?? 0;
-                          final expected = form['expected_count'] ?? 0;
-                          return Card(
-                            margin: const EdgeInsets.only(bottom: 11),
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(12),
-                              onTap: () async {
-                                await Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => EducationFormDetailsScreen(
-                                      token: widget.token,
-                                      formId: form['id'] as String,
-                                      isAdmin: widget.isAdmin,
-                                      socket: widget.socket,
-                                    ),
-                                  ),
-                                );
-                                _load();
-                              },
-                              child: Padding(
-                                padding: const EdgeInsets.all(15),
-                                child: Row(
-                                  children: [
-                                    CircleAvatar(
-                                      backgroundColor: kPrimary.withValues(
-                                        alpha: .12,
-                                      ),
-                                      child: Icon(_icon(form), color: kPrimary),
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Row(
-                                            children: [
-                                              Expanded(
-                                                child: Text(
-                                                  form['title']?.toString() ??
-                                                      '',
-                                                  style: const TextStyle(
-                                                    fontSize: 16,
-                                                    fontWeight: FontWeight.bold,
-                                                  ),
-                                                ),
-                                              ),
-                                              if (closed)
-                                                const Chip(
-                                                  label: Text(
-                                                    'סגור',
-                                                    style: TextStyle(
-                                                      fontSize: 11,
-                                                    ),
-                                                  ),
-                                                ),
-                                            ],
-                                          ),
-                                          Text(
-                                            '${_kind(form)}${form['due_at'] != null ? ' • עד ${_date(form['due_at'])}' : ''}',
-                                            style: const TextStyle(
-                                              color: kSubtext,
-                                              fontSize: 13,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 5),
-                                          Text(
-                                            widget.isAdmin
-                                                ? '$responses מתוך $expected השלימו'
-                                                : answered
-                                                ? 'הושלם'
-                                                : 'ממתין לתשובתך',
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.w600,
-                                              color: answered
-                                                  ? Colors.green.shade700
-                                                  : Colors.orange.shade800,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    const Icon(Icons.chevron_left),
-                                  ],
-                                ),
+                )
+              : _forms.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(30),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.assignment_outlined,
+                              size: 72,
+                              color: Colors.blueGrey.shade200,
+                            ),
+                            const SizedBox(height: 14),
+                            const Text(
+                              'אין עדיין אישורים או סקרים',
+                              style: TextStyle(
+                                fontSize: 19,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
-                          );
-                        },
+                            if (_canCreate)
+                              const Padding(
+                                padding: EdgeInsets.only(top: 8),
+                                child: Text('לחץ על „יצירה חדשה” כדי להתחיל'),
+                              ),
+                          ],
+                        ),
                       ),
+                    )
+                  : Column(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: TextField(
+                            decoration: const InputDecoration(
+                              labelText: 'חיפוש סקרים, אישורים ומסמכים',
+                              prefixIcon: Icon(Icons.search),
+                            ),
+                            onChanged: (value) =>
+                                setState(() => _query = value),
+                          ),
+                        ),
+                        if (visibleForms.isEmpty)
+                          const Expanded(
+                              child: Center(child: Text('לא נמצאו טפסים')))
+                        else
+                          Expanded(
+                            child: RefreshIndicator(
+                              onRefresh: _load,
+                              child: ListView.builder(
+                                padding:
+                                    const EdgeInsets.fromLTRB(12, 12, 12, 90),
+                                itemCount: visibleForms.length,
+                                itemBuilder: (_, index) {
+                                  final form = visibleForms[index];
+                                  final answered =
+                                      form['my_response_status'] != null;
+                                  final closed = form['status'] == 'closed';
+                                  final responses = form['response_count'] ?? 0;
+                                  final expected = form['expected_count'] ?? 0;
+                                  return Card(
+                                    margin: const EdgeInsets.only(bottom: 11),
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(12),
+                                      onTap: () async {
+                                        await Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                EducationFormDetailsScreen(
+                                              token: widget.token,
+                                              formId: form['id'] as String,
+                                              isAdmin: widget.isAdmin,
+                                              socket: widget.socket,
+                                            ),
+                                          ),
+                                        );
+                                        _load();
+                                      },
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(15),
+                                        child: Row(
+                                          children: [
+                                            CircleAvatar(
+                                              backgroundColor:
+                                                  kPrimary.withValues(
+                                                alpha: .12,
+                                              ),
+                                              child: Icon(_icon(form),
+                                                  color: kPrimary),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Row(
+                                                    children: [
+                                                      Expanded(
+                                                        child: Text(
+                                                          form['title']
+                                                                  ?.toString() ??
+                                                              '',
+                                                          style:
+                                                              const TextStyle(
+                                                            fontSize: 16,
+                                                            fontWeight:
+                                                                FontWeight.bold,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                      if (closed)
+                                                        const Chip(
+                                                          label: Text(
+                                                            'סגור',
+                                                            style: TextStyle(
+                                                              fontSize: 11,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                    ],
+                                                  ),
+                                                  Text(
+                                                    '${_kind(form)}${form['due_at'] != null ? ' • עד ${_date(form['due_at'])}' : ''}',
+                                                    style: const TextStyle(
+                                                      color: kSubtext,
+                                                      fontSize: 13,
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 5),
+                                                  Text(
+                                                    educationFormCanManage(form,
+                                                            isAdmin:
+                                                                widget.isAdmin)
+                                                        ? '$responses מתוך $expected השלימו'
+                                                        : answered
+                                                            ? 'הושלם'
+                                                            : 'ממתין לתשובתך',
+                                                    style: TextStyle(
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                      color: answered
+                                                          ? Colors
+                                                              .green.shade700
+                                                          : Colors
+                                                              .orange.shade800,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            const Icon(Icons.chevron_left),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
-                  ),
-              ],
-            ),
     );
   }
 }
@@ -48654,10 +49050,10 @@ class CreateEducationFormScreen extends StatefulWidget {
     this.initialForm,
     this.templateForm,
   }) : assert(
-         initialType == 'approval' ||
-             initialType == 'signature' ||
-             initialType == 'survey',
-       );
+          initialType == 'approval' ||
+              initialType == 'signature' ||
+              initialType == 'survey',
+        );
   @override
   State<CreateEducationFormScreen> createState() =>
       _CreateEducationFormScreenState();
@@ -48704,9 +49100,10 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
     _fileUrl = form['file_url']?.toString();
     _fileName = form['file_name']?.toString();
     _fileLabel.text = _fileName ?? '';
-    _dueAt = _type == 'survey'
-        ? null
-        : DateTime.tryParse(form['due_at']?.toString() ?? '')?.toLocal();
+    // Only an existing published form keeps its deadline. Copies start fresh.
+    _dueAt = widget.initialForm != null && _type != 'survey'
+        ? DateTime.tryParse(form['due_at']?.toString() ?? '')?.toLocal()
+        : null;
     _anonymous = form['anonymous'] == true;
     for (final question in _questions) {
       question.dispose();
@@ -48801,7 +49198,6 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
       if (selected != null && mounted)
         setState(() {
           _fillForm(selected);
-          if (_dueAt != null && !_dueAt!.isAfter(DateTime.now())) _dueAt = null;
         });
     } catch (e) {
       if (mounted)
@@ -48852,8 +49248,8 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
         if (_questions.isEmpty) _questions.add(SurveyQuestionDraft());
         _draftId =
             selected['_surveyDraft'] == true && selected['_duplicate'] != true
-            ? selected['id'].toString()
-            : null;
+                ? selected['id'].toString()
+                : null;
         if (selected['_duplicate'] == true)
           _title.text = surveyCopyTitle(_title.text);
         _recipientIds = null;
@@ -49023,9 +49419,8 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
                       ButtonSegment(value: 'survey', label: Text('סקר')),
                     ],
                     selected: {_type},
-                    onSelectionChanged: busy
-                        ? null
-                        : (value) => _selectType(value.single),
+                    onSelectionChanged:
+                        busy ? null : (value) => _selectType(value.single),
                   ),
                 ),
               const SizedBox(height: 8),
@@ -49088,9 +49483,8 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
                   onChanged: () => setState(() {}),
                 ),
               OutlinedButton.icon(
-                onPressed: busy || _questions.length >= 20
-                    ? null
-                    : _addQuestion,
+                onPressed:
+                    busy || _questions.length >= 20 ? null : _addQuestion,
                 icon: const Icon(Icons.add),
                 label: const Text('הוסף שאלה'),
               ),
@@ -49098,9 +49492,8 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
               SwitchListTile.adaptive(
                 contentPadding: const EdgeInsets.symmetric(horizontal: 4),
                 value: _anonymous,
-                onChanged: busy
-                    ? null
-                    : (value) => setState(() => _anonymous = value),
+                onChanged:
+                    busy ? null : (value) => setState(() => _anonymous = value),
                 title: const Text('סקר אנונימי'),
                 subtitle: const Text(
                   'הבחירות מוצגות בלי שמות',
@@ -49163,12 +49556,13 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
   }
 
   Future<void> _pickDocument() async {
+    if (_loading || _uploading || _savingDraft) return;
     final result = await FilePicker.platform.pickFiles(
       withData: true,
       type: FileType.custom,
       allowedExtensions: ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png'],
     );
-    if (result == null || result.files.single.bytes == null) return;
+    if (!mounted || result == null || result.files.single.bytes == null) return;
     final file = result.files.single;
     setState(() {
       _uploading = true;
@@ -49240,20 +49634,6 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
     });
   }
 
-  Future<void> _chooseDueDate() async {
-    final date = await showDatePicker(
-      context: context,
-      initialDate: DateTime.now().add(const Duration(days: 2)),
-      firstDate: DateTime.now(),
-      lastDate: DateTime.now().add(const Duration(days: 730)),
-    );
-    if (date != null) {
-      setState(
-        () => _dueAt = DateTime(date.year, date.month, date.day, 23, 59),
-      );
-    }
-  }
-
   void _selectType(String type) {
     if (type == _type) return;
     setState(() {
@@ -49276,6 +49656,7 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
   }
 
   Future<void> _submit() async {
+    if (_loading || _uploading || _savingDraft) return;
     if (_title.text.trim().isEmpty) {
       setState(() => _error = 'יש להזין כותרת');
       return;
@@ -49320,7 +49701,9 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
               ? _questions.map((q) => q.toJson()).toList()
               : const [],
           'anonymous': _type == 'survey' && _anonymous,
-          'dueAt': _type == 'survey' ? null : _dueAt?.toUtc().toIso8601String(),
+          'dueAt': editing && _type != 'survey'
+              ? _dueAt?.toUtc().toIso8601String()
+              : null,
         }),
       );
       final data = jsonDecode(response.body);
@@ -49338,149 +49721,196 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) => _type == 'survey'
-      ? _buildSurvey()
-      : Scaffold(
-          appBar: AppBar(
-            title: Text(
-              widget.initialForm != null
-                  ? 'עריכת טופס'
-                  : widget.lockType
-                  ? switch (_type) {
-                      'signature' => 'יצירת בקשת חתימה',
-                      'survey' => 'יצירת סקר',
-                      _ => 'יצירת אישור',
-                    }
+  Widget _documentFormCard(Widget child) => Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: kPrimary.withValues(alpha: .14)),
+        ),
+        child: Material(type: MaterialType.transparency, child: child),
+      );
+
+  Widget _buildDocumentForm() {
+    final busy = _loading || _uploading || _savingDraft;
+    final signature = _type == 'signature';
+    final editing = widget.initialForm != null;
+    return Scaffold(
+      backgroundColor: const Color(0xFFF2F7FC),
+      appBar: AppBar(
+        title: Text(
+          editing
+              ? 'עריכת טופס'
+              : widget.lockType
+                  ? (signature ? 'יצירת בקשת חתימה' : 'יצירת אישור')
                   : 'יצירת אישור, חתימה או סקר',
-            ),
-            backgroundColor: kPrimary,
-          ),
-          body: ListView(
-            padding: const EdgeInsets.all(18),
+        ),
+        backgroundColor: kPrimary,
+      ),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: ListView(
+            padding: const EdgeInsets.all(16),
             children: [
-              if (widget.initialForm != null)
+              if (!editing)
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    TextButton.icon(
+                      onPressed: busy ? null : _loadTemplate,
+                      icon: const Icon(Icons.folder_open_outlined, size: 20),
+                      label: const Text('טען מטופס קיים'),
+                    ),
+                    TextButton.icon(
+                      onPressed: busy ? null : _chooseRecipients,
+                      icon: const Icon(Icons.people_outline, size: 20),
+                      label: Text(
+                        _recipientIds == null
+                            ? 'נמענים: כל חברי הקבוצה'
+                            : 'נמענים: ${_recipientIds!.length} נבחרו',
+                      ),
+                    ),
+                  ],
+                ),
+              if (!widget.lockType && !editing)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'approval', label: Text('אישור')),
+                      ButtonSegment(value: 'signature', label: Text('חתימה')),
+                      ButtonSegment(value: 'survey', label: Text('סקר')),
+                    ],
+                    selected: {_type},
+                    onSelectionChanged:
+                        busy ? null : (value) => _selectType(value.single),
+                  ),
+                ),
+              if (editing)
                 const Padding(
                   padding: EdgeInsets.only(bottom: 12),
                   child: Text(
                     'שינוי תוכן יבקש מילוי מחדש. הגרסה והתשובות הקודמות נשמרות בהיסטוריה.',
-                  ),
-                )
-              else ...[
-                OutlinedButton.icon(
-                  onPressed: _loadTemplate,
-                  icon: const Icon(Icons.folder_open),
-                  label: const Text('טען מטופס קיים'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _chooseRecipients,
-                  icon: const Icon(Icons.people_outline),
-                  label: Text(
-                    _recipientIds == null
-                        ? 'נמענים: כל חברי הקבוצה'
-                        : 'נמענים: ${_recipientIds!.length} נבחרו',
+                    style: TextStyle(color: kSubtext, fontSize: 12),
                   ),
                 ),
-              ],
-              if (!widget.lockType && widget.initialForm == null) ...[
-                SegmentedButton<String>(
-                  multiSelectionEnabled: false,
-                  emptySelectionAllowed: false,
-                  segments: const [
-                    ButtonSegment(
-                      value: 'approval',
-                      icon: Icon(Icons.fact_check_outlined),
-                      label: Text('אישור'),
-                    ),
-                    ButtonSegment(
-                      value: 'signature',
-                      icon: Icon(Icons.draw_outlined),
-                      label: Text('חתימה'),
-                    ),
-                    ButtonSegment(
-                      value: 'survey',
-                      icon: Icon(Icons.poll_outlined),
-                      label: Text('סקר'),
-                    ),
-                  ],
-                  selected: {_type},
-                  onSelectionChanged: (value) => _selectType(value.single),
-                ),
-                const SizedBox(height: 18),
-              ],
-              TextField(
-                controller: _title,
-                textDirection: TextDirection.rtl,
-                decoration: const InputDecoration(
-                  labelText: 'כותרת *',
-                  prefixIcon: Icon(Icons.title),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _description,
-                minLines: 3,
-                maxLines: 7,
-                textDirection: TextDirection.rtl,
-                decoration: const InputDecoration(
-                  labelText: 'הסבר להורים',
-                  alignLabelWithHint: true,
-                ),
-              ),
-              const SizedBox(height: 12),
-              if (_type != 'survey')
-                Card(
-                  child: ListTile(
-                    leading: _uploading
-                        ? const CircularProgressIndicator()
-                        : const Icon(Icons.attach_file),
-                    title: Text(
-                      _fileName ??
-                          (_type == 'signature'
-                              ? 'צירוף מסמך לחתימה *'
-                              : 'צירוף תמונה או מסמך (אופציונלי)'),
-                    ),
-                    subtitle: Text(
-                      _type == 'signature'
-                          ? 'חובה לצרף PDF, Word או תמונה'
-                          : 'PDF, Word או תמונה',
-                    ),
-                    trailing: _fileName != null
-                        ? IconButton(
-                            icon: const Icon(Icons.close),
-                            onPressed: () => setState(() {
-                              _fileName = null;
-                              _fileUrl = null;
-                            }),
-                          )
-                        : null,
-                    onTap: _uploading ? null : _pickDocument,
-                  ),
-                ),
-              if (_fileUrl != null && _type != 'survey')
-                TextFormField(
-                  controller: _fileLabel,
-                  decoration: const InputDecoration(
-                    labelText: 'שם הקובץ להצגה',
-                  ),
-                  onChanged: (value) => _fileName = value.trim(),
-                ),
-              Card(
-                child: ListTile(
-                  leading: const Icon(Icons.event_outlined),
-                  title: Text(
-                    _dueAt == null
-                        ? 'ללא מועד סיום'
-                        : 'מועד סיום: ${_dueAt!.day}/${_dueAt!.month}/${_dueAt!.year}',
-                  ),
-                  trailing: _dueAt == null
-                      ? null
-                      : IconButton(
-                          icon: const Icon(Icons.close),
-                          onPressed: () => setState(() => _dueAt = null),
+              const SizedBox(height: 8),
+              _documentFormCard(
+                Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      TextField(
+                        controller: _title,
+                        enabled: !busy,
+                        maxLength: 160,
+                        textDirection: TextDirection.rtl,
+                        decoration: InputDecoration(
+                          labelText: 'כותרת *',
+                          hintText: signature ? 'שם בקשת החתימה' : 'שם האישור',
+                          counterText: '',
+                          prefixIcon: Icon(signature
+                              ? Icons.draw_outlined
+                              : Icons.fact_check_outlined),
                         ),
-                  onTap: _chooseDueDate,
-                ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _description,
+                        enabled: !busy,
+                        minLines: 1,
+                        maxLines: 3,
+                        maxLength: 5000,
+                        textDirection: TextDirection.rtl,
+                        decoration: const InputDecoration(
+                          labelText: 'הסבר להורים',
+                          counterText: '',
+                          alignLabelWithHint: true,
+                        ),
+                      ),
+                    ]),
+              ),
+              const SizedBox(height: 14),
+              _documentFormCard(
+                Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(children: [
+                        Icon(
+                            signature ? Icons.draw_outlined : Icons.attach_file,
+                            color: kPrimary,
+                            size: 22),
+                        const SizedBox(width: 9),
+                        Expanded(
+                          child: Text(
+                            signature ? 'המסמך לחתימה' : 'תמונה או מסמך מצורף',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ]),
+                      const SizedBox(height: 12),
+                      Material(
+                        color: const Color(0xFFF2F7FC),
+                        borderRadius: BorderRadius.circular(12),
+                        clipBehavior: Clip.antiAlias,
+                        child: ListTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          enabled: !busy,
+                          leading: _uploading
+                              ? const SizedBox.square(
+                                  dimension: 24,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : Icon(
+                                  _fileUrl != null
+                                      ? Icons.description_outlined
+                                      : Icons.upload_file_outlined,
+                                  color: kPrimary),
+                          title: Text(
+                            _fileName ??
+                                (signature
+                                    ? 'צירוף מסמך לחתימה *'
+                                    : 'צירוף תמונה או מסמך (אופציונלי)'),
+                          ),
+                          subtitle: Text(
+                            signature
+                                ? 'חובה לצרף PDF, Word או תמונה'
+                                : 'PDF, Word או תמונה',
+                            style:
+                                const TextStyle(fontSize: 12, color: kSubtext),
+                          ),
+                          trailing: _fileUrl != null
+                              ? IconButton(
+                                  tooltip: 'הסר קובץ',
+                                  icon: const Icon(Icons.close),
+                                  onPressed: busy
+                                      ? null
+                                      : () => setState(() {
+                                            _fileName = null;
+                                            _fileUrl = null;
+                                            _fileLabel.clear();
+                                          }),
+                                )
+                              : null,
+                          onTap: busy ? null : _pickDocument,
+                        ),
+                      ),
+                      if (_fileUrl != null) ...[
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _fileLabel,
+                          enabled: !busy,
+                          textDirection: TextDirection.rtl,
+                          decoration: const InputDecoration(
+                            labelText: 'שם הקובץ להצגה',
+                          ),
+                          onChanged: (value) => _fileName = value.trim(),
+                        ),
+                      ],
+                    ]),
               ),
               if (_error != null)
                 Padding(
@@ -49491,26 +49921,35 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
                     textAlign: TextAlign.center,
                   ),
                 ),
-              const SizedBox(height: 20),
-              ElevatedButton.icon(
-                onPressed: _loading || _uploading ? null : _submit,
-                icon: _loading
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.send),
-                label: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  child: Text(
-                    widget.initialForm == null ? 'פרסם בקבוצה' : 'שמור שינויים',
+              const SizedBox(height: 16),
+              Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: busy ? null : _submit,
+                    icon: _loading
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Icon(editing ? Icons.check : Icons.send),
+                    label: Text(editing ? 'שמור שינויים' : 'פרסם בקבוצה'),
                   ),
-                ),
+                ],
               ),
+              const SizedBox(height: 30),
             ],
           ),
-        );
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      _type == 'survey' ? _buildSurvey() : _buildDocumentForm();
 }
 
 class EducationFormDetailsScreen extends StatefulWidget {
@@ -49537,6 +49976,15 @@ class _EducationFormDetailsScreenState
       _deleted = false;
   String? _error;
   Map<String, dynamic>? _form;
+  bool get _canManage => _form == null
+      ? widget.isAdmin
+      : educationFormCanManage(_form!, isAdmin: widget.isAdmin);
+  bool get _isRecipient {
+    final permission = _form?['isRecipient'];
+    return permission is bool ? permission : !_canManage;
+  }
+
+  bool get _canSend => _canManage && _form?['canSend'] != false;
   List<Map<String, dynamic>> _participants = [], _results = [];
   final Map<int, dynamic> _answers = {};
   final _signerName = TextEditingController();
@@ -49547,13 +49995,25 @@ class _EducationFormDetailsScreenState
   void initState() {
     super.initState();
     widget.socket?.on('education:updated', _onEducationUpdated);
-    if (widget.isAdmin) {
+    if (_canManage) {
       _onlineRefreshTimer = Timer.periodic(
         const Duration(seconds: 5),
         (_) => _load(silent: true),
       );
     }
     _load();
+  }
+
+  void _syncOnlineRefreshTimer() {
+    if (_canManage && !_deleted) {
+      _onlineRefreshTimer ??= Timer.periodic(
+        const Duration(seconds: 5),
+        (_) => _load(silent: true),
+      );
+    } else {
+      _onlineRefreshTimer?.cancel();
+      _onlineRefreshTimer = null;
+    }
   }
 
   void _onEducationUpdated(dynamic data) {
@@ -49569,7 +50029,7 @@ class _EducationFormDetailsScreenState
       });
       return;
     }
-    if (!widget.isAdmin &&
+    if (!_canManage &&
         action != 'edited' &&
         action != 'closed' &&
         action != 'opened' &&
@@ -49629,10 +50089,14 @@ class _EducationFormDetailsScreenState
       }
       if (!mounted || _deleted) return;
       setState(() {
-        if (_form != null &&
+        final contentChanged = _form != null &&
             ['title', 'description', 'file_url', 'questions', 'anonymous'].any(
               (key) => jsonEncode(loadedForm[key]) != jsonEncode(_form![key]),
-            )) {
+            );
+        final restoreAnswers = _form == null ||
+            contentChanged ||
+            _form?['my_response_status'] != loadedForm['my_response_status'];
+        if (contentChanged) {
           _answers.clear();
           _signature.clear();
         }
@@ -49644,7 +50108,7 @@ class _EducationFormDetailsScreenState
             ? []
             : (data['results'] as List).cast<Map<String, dynamic>>();
         final previous = _form?['my_answers'];
-        if (previous is Map) {
+        if (restoreAnswers && previous is Map) {
           for (final entry in previous.entries) {
             final key = int.tryParse(entry.key.toString());
             if (key != null) {
@@ -49657,11 +50121,12 @@ class _EducationFormDetailsScreenState
         if (_signerName.text.trim().isEmpty) {
           _signerName.text =
               _form?['my_signer_name']?.toString().trim().isNotEmpty == true
-              ? _form!['my_signer_name'].toString()
-              : defaultSignerName;
+                  ? _form!['my_signer_name'].toString()
+                  : defaultSignerName;
         }
         _loading = false;
       });
+      _syncOnlineRefreshTimer();
     } catch (e) {
       if (mounted && !_deleted) {
         setState(() {
@@ -49673,13 +50138,14 @@ class _EducationFormDetailsScreenState
   }
 
   String _statusLabel(String? status) => switch (status) {
-    'approved' => 'אושר',
-    'declined' => 'לא אושר',
-    'completed' => 'הושלם',
-    _ => 'טרם השלים',
-  };
+        'approved' => 'אושר',
+        'declined' => 'לא אושר',
+        'completed' => 'הושלם',
+        _ => 'טרם השלים',
+      };
 
   Future<void> _respond(String status) async {
+    if (!_isRecipient || _saving || _form?['status'] == 'closed') return;
     final form = _form!;
     final type = form['form_type'];
     if (type == 'signature' &&
@@ -49691,8 +50157,8 @@ class _EducationFormDetailsScreenState
     final questions = (form['questions'] as List? ?? []);
     if (type == 'survey' &&
         questions.asMap().keys.any(
-          (index) => surveySelectedAnswers(_answers[index]).isEmpty,
-        )) {
+              (index) => surveySelectedAnswers(_answers[index]).isEmpty,
+            )) {
       setState(() => _error = 'יש לענות על כל שאלות הסקר');
       return;
     }
@@ -49749,7 +50215,7 @@ class _EducationFormDetailsScreenState
       await _load();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('בקשת השינוי נשלחה למנהל הקבוצה')),
+          const SnackBar(content: Text('בקשת השינוי נשלחה למנהל הטופס')),
         );
       }
     } catch (e) {
@@ -49792,6 +50258,9 @@ class _EducationFormDetailsScreenState
   }
 
   Future<void> _remind({String? userId}) async {
+    if (!_canSend) {
+      return;
+    }
     setState(() => _saving = true);
     try {
       final response = await http.post(
@@ -49851,9 +50320,8 @@ class _EducationFormDetailsScreenState
       final font = pw.Font.ttf(fontData);
       final document = pw.Document();
       final questions = (_form?['questions'] as List? ?? []).cast<dynamic>();
-      final completed = _participants
-          .where((p) => p['response_status'] != null)
-          .length;
+      final completed =
+          _participants.where((p) => p['response_status'] != null).length;
       final generatedAt = DateTime.now();
 
       document.addPage(
@@ -50062,6 +50530,9 @@ class _EducationFormDetailsScreenState
   }
 
   Future<void> _duplicateForm() async {
+    if (!_canSend) {
+      return;
+    }
     final form = _form;
     if (form == null) return;
     await Navigator.push<bool>(
@@ -50124,6 +50595,9 @@ class _EducationFormDetailsScreenState
   }
 
   Future<void> _sendSelectedMembers() async {
+    if (!_canSend) {
+      return;
+    }
     try {
       final ids = await showEducationRecipientsDialog(
         context,
@@ -50160,6 +50634,9 @@ class _EducationFormDetailsScreenState
   }
 
   Future<void> _assignNewMembers() async {
+    if (!_canSend) {
+      return;
+    }
     setState(() {
       _saving = true;
       _error = null;
@@ -50189,6 +50666,9 @@ class _EducationFormDetailsScreenState
   }
 
   Future<void> _republish() async {
+    if (!_canSend) {
+      return;
+    }
     setState(() {
       _saving = true;
       _error = null;
@@ -50247,6 +50727,7 @@ class _EducationFormDetailsScreenState
   }
 
   Widget _memberResponse() {
+    if (!_isRecipient) return const SizedBox.shrink();
     final form = _form!;
     final type = form['form_type'];
     final closed = form['status'] == 'closed';
@@ -50286,12 +50767,12 @@ class _EducationFormDetailsScreenState
               ),
               const SizedBox(height: 12),
               if (changeStatus == 'pending')
-                const Chip(label: Text('בקשת שינוי ממתינה לאישור מנהל'))
+                const Chip(label: Text('בקשת שינוי ממתינה לאישור מנהל הטופס'))
               else
                 OutlinedButton.icon(
                   onPressed: _saving ? null : _requestResponseChange,
                   icon: const Icon(Icons.change_circle_outlined),
-                  label: const Text('בקש/י מהמנהל לשנות בחירה'),
+                  label: const Text('בקש/י ממנהל הטופס לשנות בחירה'),
                 ),
             ],
           ),
@@ -50343,9 +50824,8 @@ class _EducationFormDetailsScreenState
                                 if (values.isEmpty) {
                                   _answers.remove(entry.key);
                                 } else {
-                                  _answers[entry.key] = options
-                                      .where(values.contains)
-                                      .toList();
+                                  _answers[entry.key] =
+                                      options.where(values.contains).toList();
                                 }
                               });
                             },
@@ -50421,6 +50901,7 @@ class _EducationFormDetailsScreenState
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: GestureDetector(
+                  key: const ValueKey('education-signature-canvas'),
                   onPanStart: (d) =>
                       setState(() => _signature.add(d.localPosition)),
                   onPanUpdate: (d) =>
@@ -50473,10 +50954,16 @@ class _EducationFormDetailsScreenState
   }
 
   Widget _adminPanel() {
-    final pending = _participants
-        .where((p) => p['response_status'] == null)
-        .length;
+    final pending =
+        _participants.where((p) => p['response_status'] == null).length;
     final newMembers = (_form?['new_member_count'] as num?)?.toInt() ?? 0;
+    final queued = (_form?['my_role'] == 'admin')
+        ? 0
+        : (_form?['pending_recipient_count'] as num?)?.toInt() ?? 0;
+    final completedCount = (_form?['response_count'] as num?)?.toInt() ??
+        (_participants.length - pending);
+    final expectedCount = (_form?['expected_count'] as num?)?.toInt() ??
+        (_participants.length + queued);
     final closed = _form?['status'] == 'closed';
     return Column(
       children: [
@@ -50499,27 +50986,33 @@ class _EducationFormDetailsScreenState
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
                     _EducationCount(
-                      value: '${_participants.length - pending}',
+                      value: '$completedCount',
                       label: 'השלימו',
                       color: Colors.green,
                     ),
                     _EducationCount(
-                      value: '$pending',
+                      value:
+                          '${(expectedCount - completedCount).clamp(0, expectedCount)}',
                       label: 'טרם השלימו',
                       color: Colors.orange,
                     ),
                     _EducationCount(
-                      value: '${_participants.length}',
+                      value: '$expectedCount',
                       label: 'סה״כ',
                       color: kPrimary,
                     ),
                   ],
                 ),
+                if (queued > 0) ...[
+                  const SizedBox(height: 8),
+                  Text('$queued ממתינים לאישור הצטרפות לקבוצה',
+                      style: const TextStyle(color: kSubtext, fontSize: 12)),
+                ],
                 const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
-                    onPressed: closed || pending == 0 || _saving
+                    onPressed: closed || pending == 0 || _saving || !_canSend
                         ? null
                         : () => _remind(),
                     icon: const Icon(Icons.notifications_active_outlined),
@@ -50530,14 +51023,17 @@ class _EducationFormDetailsScreenState
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
-                    onPressed: closed || _saving ? null : _republish,
+                    onPressed:
+                        closed || _saving || !_canSend ? null : _republish,
                     icon: const Icon(Icons.campaign_outlined),
                     label: const Text('פרסם שוב בשיחת הקבוצה'),
                   ),
                 ),
                 const SizedBox(height: 8),
                 OutlinedButton.icon(
-                  onPressed: closed || _saving ? null : _sendSelectedMembers,
+                  onPressed: closed || _saving || !_canSend
+                      ? null
+                      : _sendSelectedMembers,
                   icon: const Icon(Icons.people_outline),
                   label: const Text('שלח לנמענים מתוך רשימה'),
                 ),
@@ -50560,7 +51056,9 @@ class _EducationFormDetailsScreenState
                   SizedBox(
                     width: double.infinity,
                     child: OutlinedButton.icon(
-                      onPressed: closed || _saving ? null : _assignNewMembers,
+                      onPressed: closed || _saving || !_canSend
+                          ? null
+                          : _assignNewMembers,
                       icon: const Icon(Icons.person_add_alt_1_outlined),
                       label: Text(
                         'שלח לחברים ולמוזמנים שטרם קיבלו ($newMembers)',
@@ -50622,8 +51120,8 @@ class _EducationFormDetailsScreenState
                   color: changePending
                       ? Colors.orange.shade800
                       : status == null
-                      ? Colors.orange.shade800
-                      : Colors.green.shade700,
+                          ? Colors.orange.shade800
+                          : Colors.green.shade700,
                 ),
               ),
               trailing: changePending
@@ -50636,9 +51134,9 @@ class _EducationFormDetailsScreenState
                           onPressed: closed || _saving
                               ? null
                               : () => _decideResponseChange(
-                                  person['id'] as String,
-                                  'rejected',
-                                ),
+                                    person['id'] as String,
+                                    'rejected',
+                                  ),
                         ),
                         IconButton(
                           tooltip: 'אשר שינוי בחירה',
@@ -50646,23 +51144,23 @@ class _EducationFormDetailsScreenState
                           onPressed: closed || _saving
                               ? null
                               : () => _decideResponseChange(
-                                  person['id'] as String,
-                                  'approved',
-                                ),
+                                    person['id'] as String,
+                                    'approved',
+                                  ),
                         ),
                       ],
                     )
                   : status == null
-                  ? IconButton(
-                      icon: const Icon(Icons.notifications_none),
-                      tooltip: 'שלח תזכורת',
-                      onPressed: _saving
+                      ? IconButton(
+                          icon: const Icon(Icons.notifications_none),
+                          tooltip: 'שלח תזכורת',
+                          onPressed: closed || _saving || !_canSend
+                              ? null
+                              : () => _remind(userId: person['id'] as String),
+                        )
+                      : person['submitted_at'] == null
                           ? null
-                          : () => _remind(userId: person['id'] as String),
-                    )
-                  : person['submitted_at'] == null
-                  ? null
-                  : Text(_shortDate(person['submitted_at'])),
+                          : Text(_shortDate(person['submitted_at'])),
             ),
           );
         }),
@@ -50734,7 +51232,7 @@ class _EducationFormDetailsScreenState
         title: Text(form['title']?.toString() ?? ''),
         backgroundColor: kPrimary,
         actions: [
-          if (widget.isAdmin)
+          if (_canManage)
             PopupMenuButton<String>(
               onSelected: (value) {
                 if (value == 'toggle') {
@@ -50755,7 +51253,8 @@ class _EducationFormDetailsScreenState
                   ),
                 ),
                 if (form['form_type'] == 'survey') ...[
-                  const PopupMenuItem(
+                  PopupMenuItem(
+                    enabled: _canSend,
                     value: 'duplicate',
                     child: Text('שכפל סקר'),
                   ),
@@ -50788,8 +51287,8 @@ class _EducationFormDetailsScreenState
                           form['form_type'] == 'survey'
                               ? Icons.poll_outlined
                               : form['form_type'] == 'signature'
-                              ? Icons.draw_outlined
-                              : Icons.fact_check_outlined,
+                                  ? Icons.draw_outlined
+                                  : Icons.fact_check_outlined,
                           color: kPrimary,
                         ),
                         const SizedBox(width: 8),
@@ -50836,7 +51335,19 @@ class _EducationFormDetailsScreenState
                   textAlign: TextAlign.center,
                 ),
               ),
-            if (widget.isAdmin) _adminPanel() else _memberResponse(),
+            if (_isRecipient) ...[
+              if (_canManage)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(4, 14, 4, 8),
+                  child: Text(
+                    'המענה שלי',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              _memberResponse(),
+              if (_canManage) const SizedBox(height: 18),
+            ],
+            if (_canManage) _adminPanel(),
             const SizedBox(height: 30),
           ],
         ),
@@ -50855,18 +51366,18 @@ class _EducationCount extends StatelessWidget {
   });
   @override
   Widget build(BuildContext context) => Column(
-    children: [
-      Text(
-        value,
-        style: TextStyle(
-          fontSize: 24,
-          fontWeight: FontWeight.bold,
-          color: color,
-        ),
-      ),
-      Text(label),
-    ],
-  );
+        children: [
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+          Text(label),
+        ],
+      );
 }
 
 class _EducationSignaturePainter extends CustomPainter {
@@ -50889,6 +51400,7 @@ class _EducationSignaturePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _EducationSignaturePainter oldDelegate) => true;
 }
+
 class _AppLifecycleObserver extends WidgetsBindingObserver {
   final VoidCallback onResume;
   _AppLifecycleObserver({required this.onResume});

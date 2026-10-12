@@ -457,7 +457,8 @@ void main() {
               _field('תיאור מפורט *'), 'תיאור ציבורי שהמשתמש מילא');
         }
         expect(server.uploads, isEmpty);
-        await _tapVisible(tester, find.text(editing ? 'שמור שינויים' : 'פרסם'));
+        await _tapVisible(
+            tester, find.text(editing ? 'שמור שינויים' : 'פרסם מודעה'));
         await _until(tester, () => !state.mounted);
         final outcome = await result;
         expect(outcome.cancelled, isFalse);

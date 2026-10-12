@@ -8,6 +8,11 @@ module.exports = {
   // Handler fixtures isolate friendship plumbing; its real transactions are
   // exercised by friendship-policy and contact-request-delivery DB suites.
   writeFriendshipMessage: async (db, _sender, _recipient, write) => write(db),
+  // Ordinary-text domain fixtures have no unfamiliar emoji; visual emoji
+  // scanning is exercised by the dedicated artwork/moderation/route suites.
+  inspectUnicodeEmojiText: async () => null,
+  prepareUnicodeEmojiMessage: async () => null,
+  combineMessageClassifications: require('../../server/content-filter-policy').combineMessageClassifications,
   notifyFriendshipChange() {},
   getAuditContext: () => null,
   runWithAuditContext: (_context, callback) => callback(),

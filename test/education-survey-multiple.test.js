@@ -46,7 +46,7 @@ test('actual survey handlers persist modes, validate mixed answers and archive c
   await db.connect();
   try {
     await db.query('SET search_path TO pg_temp, public');
-    await db.query(`CREATE TEMP TABLE groups(id uuid PRIMARY KEY,name text);
+    await db.query(`CREATE TEMP TABLE groups(id uuid PRIMARY KEY,name text,send_permission text DEFAULT 'all');
       CREATE TEMP TABLE users(id uuid PRIMARY KEY,name text);
       CREATE TEMP TABLE group_members(group_id uuid,user_id uuid,role text,status text);
       CREATE TEMP TABLE education_forms(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),group_id uuid,
@@ -66,14 +66,14 @@ test('actual survey handlers persist modes, validate mixed answers and archive c
     await db.query(SCHEMA.replace('CREATE TABLE IF NOT EXISTS education_survey_drafts',
       'CREATE TEMP TABLE education_survey_drafts'));
     const [group, admin, active, pending] = Array.from({ length: 4 }, () => crypto.randomUUID());
-    await db.query('INSERT INTO groups VALUES($1,$2)', [group, 'בדיקת בחירות']);
+    await db.query('INSERT INTO groups(id,name) VALUES($1,$2)', [group, 'בדיקת בחירות']);
     for (const [id, role, status] of [[admin, 'admin', 'member'], [active, 'member', 'member'], [pending, 'admin', 'pending']]) {
       await db.query('INSERT INTO users VALUES($1,$2)', [id, 'שם בדיקה']);
       await db.query('INSERT INTO group_members VALUES($1,$2,$3,$4)', [group, id, role, status]);
     }
     const handlers = new Map(), pushes = [], events = [];
     const app = Object.fromEntries(['get', 'post', 'put', 'delete'].map(method => [method,
-      (route, auth, handler) => handlers.set(`${method.toUpperCase()} ${route}`, handler)]));
+      (route, ...middleware) => handlers.set(`${method.toUpperCase()} ${route}`, middleware.at(-1))]));
     const pool = { query: db.query.bind(db), connect: async () => ({ query: db.query.bind(db), release() {} }) };
     const io = { to: room => ({ emit: (name, body) => events.push({ room, name, body }) }) };
     const dependencies = { auth() {}, getPool: async () => pool, io, sendPush: (...args) => pushes.push(args) };
@@ -85,7 +85,9 @@ test('actual survey handlers persist modes, validate mixed answers and archive c
       const start = source.indexOf(begin);
       assert(start >= 0);
       vm.runInNewContext(source.slice(start, source.indexOf(end, start)), {
-        app, ...dependencies, ...selection, crypto, console, logActivity() {},
+        app, ...dependencies, ...selection, crypto, console, logActivity() {}, messageRateLimit() {},
+        denyTeenEducation: require('../server/education-form-policy').denyTeenEducation,
+        educationFormPolicy: { canSend: async () => true, validateContent: async () => {} },
       });
     }
     registerEducationFormEditing(app, dependencies);
@@ -109,7 +111,7 @@ test('actual survey handlers persist modes, validate mixed answers and archive c
     assert.deepEqual(created.body.questions, questions);
     const form = created.body;
     assert.deepEqual((await db.query('SELECT questions FROM education_forms WHERE id=$1', [form.id])).rows[0].questions, questions);
-    assert.equal((await db.query('SELECT * FROM education_form_recipients WHERE form_id=$1', [form.id])).rowCount, 2);
+    assert.equal((await db.query('SELECT * FROM education_form_recipients WHERE form_id=$1', [form.id])).rowCount, 3);
     assert.equal(pushes.length, 1);
     assert.equal(pushes[0][0], active);
     const responseBody = { status: 'completed', expectedUpdatedAt: form.updated_at,
@@ -145,10 +147,11 @@ test('actual survey handlers persist modes, validate mixed answers and archive c
     assert(archived, 'The previous answered version was archived');
     assert.deepEqual(archived.snapshot.questions, questions);
     assert.deepEqual(archived.responses[0].answers, { 0: 'בוקר', 1: ['פירות', 'עוגה'] });
-    assert.equal(pushes.length, 2);
-    assert(pushes.every(push => push[0] === active), 'Pending invitees never receive form content pushes');
+    assert.equal(pushes.length, 3);
+    assert(pushes.every(push => push[0] !== pending), 'Pending invitees never receive form content pushes');
+    assert(pushes.slice(1).some(push => push[0] === admin), 'A participating creator receives updates like other active recipients');
     assert.equal((await db.query('SELECT * FROM messages WHERE education_form_id=$1', [form.id])).rowCount, 1);
-    assert.equal((await db.query('SELECT * FROM education_form_recipients WHERE form_id=$1', [form.id])).rowCount, 2);
+    assert.equal((await db.query('SELECT * FROM education_form_recipients WHERE form_id=$1', [form.id])).rowCount, 3);
     assert.equal((await call('POST', '/api/education-forms/:id/respond', active, form.id, responseBody)).code, 409);
     assert.equal((await call('POST', '/api/education-forms/:id/respond', pending, form.id,
       { ...responseBody, expectedUpdatedAt: changed.body.updated_at })).code, 404);

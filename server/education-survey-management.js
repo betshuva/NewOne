@@ -1,4 +1,5 @@
 const { normalizeQuestionSelection } = require('./education-survey-questions');
+const { denyTeenEducation } = require('./education-form-policy');
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS education_survey_drafts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -39,12 +40,13 @@ function normalizeSurveyDraft(body) {
 
 function registerEducationSurveyManagement(app, { auth, getPool, io }) {
   app.get('/api/groups/:id/education-survey-drafts', auth, async (req, res) => {
+    if (denyTeenEducation(req, res)) return;
     try {
       const pool = await getPool();
       const admin = await pool.query(`SELECT 1 FROM group_members
-        WHERE group_id=$1 AND user_id=$2 AND role='admin' AND status='member'`,
+        WHERE group_id=$1 AND user_id=$2 AND status='member'`,
       [req.params.id, req.user.id]);
-      if (!admin.rows.length) return res.status(403).json({ error: 'רק מנהל קבוצה יכול לנהל טיוטות' });
+      if (!admin.rows.length) return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
       const drafts = await pool.query(`SELECT id,group_id,title,description,questions,anonymous,updated_at
         FROM education_survey_drafts WHERE group_id=$1 AND created_by=$2
         ORDER BY updated_at DESC`, [req.params.id, req.user.id]);
@@ -53,6 +55,7 @@ function registerEducationSurveyManagement(app, { auth, getPool, io }) {
   });
 
   app.post('/api/groups/:id/education-survey-drafts', auth, async (req, res) => {
+    if (denyTeenEducation(req, res)) return;
     let draft;
     try { draft = normalizeSurveyDraft(req.body); }
     catch (e) { return res.status(400).json({ error: e.message }); }
@@ -60,17 +63,18 @@ function registerEducationSurveyManagement(app, { auth, getPool, io }) {
       const pool = await getPool();
       const saved = await pool.query(`INSERT INTO education_survey_drafts
         (group_id,created_by,title,description,questions,anonymous)
-        SELECT $1,$2,$3,$4,$5,$6 WHERE EXISTS(SELECT 1 FROM group_members
-          WHERE group_id=$1 AND user_id=$2 AND role='admin' AND status='member')
+        SELECT $1,$2,$3,$4,$5,$6 WHERE EXISTS(SELECT 1 FROM group_members gm JOIN groups g ON g.id=gm.group_id
+          WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member' AND (gm.role='admin' OR g.send_permission<>'admin'))
         RETURNING id,group_id,title,description,questions,anonymous,updated_at`,
       [req.params.id, req.user.id, draft.title, draft.description,
         JSON.stringify(draft.questions), draft.anonymous]);
-      if (!saved.rows.length) return res.status(403).json({ error: 'רק מנהל קבוצה יכול לשמור טיוטה' });
+      if (!saved.rows.length) return res.status(403).json({ error: 'אין הרשאה לשלוח תוכן לקבוצה' });
       res.status(201).json(saved.rows[0]);
     } catch (e) { res.status(500).json({ error: 'שמירת הטיוטה נכשלה' }); }
   });
 
   app.put('/api/education-survey-drafts/:id', auth, async (req, res) => {
+    if (denyTeenEducation(req, res)) return;
     let draft;
     try { draft = normalizeSurveyDraft(req.body); }
     catch (e) { return res.status(400).json({ error: e.message }); }
@@ -78,8 +82,8 @@ function registerEducationSurveyManagement(app, { auth, getPool, io }) {
       const pool = await getPool();
       const saved = await pool.query(`UPDATE education_survey_drafts draft
         SET title=$3,description=$4,questions=$5,anonymous=$6,updated_at=now()
-        WHERE draft.id=$1 AND draft.created_by=$2 AND EXISTS(SELECT 1 FROM group_members gm
-          WHERE gm.group_id=draft.group_id AND gm.user_id=$2 AND gm.role='admin' AND gm.status='member')
+        WHERE draft.id=$1 AND draft.created_by=$2 AND EXISTS(SELECT 1 FROM group_members gm JOIN groups g ON g.id=gm.group_id
+          WHERE gm.group_id=draft.group_id AND gm.user_id=$2 AND gm.status='member' AND (gm.role='admin' OR g.send_permission<>'admin'))
         RETURNING id,group_id,title,description,questions,anonymous,updated_at`,
       [req.params.id, req.user.id, draft.title, draft.description,
         JSON.stringify(draft.questions), draft.anonymous]);
@@ -89,11 +93,12 @@ function registerEducationSurveyManagement(app, { auth, getPool, io }) {
   });
 
   app.delete('/api/education-survey-drafts/:id', auth, async (req, res) => {
+    if (denyTeenEducation(req, res)) return;
     try {
       const pool = await getPool();
       const removed = await pool.query(`DELETE FROM education_survey_drafts draft
         WHERE draft.id=$1 AND draft.created_by=$2 AND EXISTS(SELECT 1 FROM group_members gm
-          WHERE gm.group_id=draft.group_id AND gm.user_id=$2 AND gm.role='admin' AND gm.status='member')
+          WHERE gm.group_id=draft.group_id AND gm.user_id=$2 AND gm.status='member')
         RETURNING id`, [req.params.id, req.user.id]);
       if (!removed.rows.length) return res.status(404).json({ error: 'הטיוטה לא נמצאה או שאין הרשאה' });
       res.json({ ok: true });
@@ -101,16 +106,17 @@ function registerEducationSurveyManagement(app, { auth, getPool, io }) {
   });
 
   app.delete('/api/education-forms/:id', auth, async (req, res) => {
+    if (denyTeenEducation(req, res)) return;
     let client, committed = false;
     try {
       client = await (await getPool()).connect();
       await client.query('BEGIN');
       const found = await client.query(`SELECT f.id,f.group_id,f.form_type FROM education_forms f
         WHERE f.id=$1 AND EXISTS(SELECT 1 FROM group_members gm
-          WHERE gm.group_id=f.group_id AND gm.user_id=$2 AND gm.role='admin' AND gm.status='member')
+          WHERE gm.group_id=f.group_id AND gm.user_id=$2 AND (gm.role='admin' OR f.created_by=$2) AND gm.status='member')
         FOR UPDATE OF f`, [req.params.id, req.user.id]);
       const form = found.rows[0];
-      if (!form) return res.status(403).json({ error: 'רק מנהל קבוצה יכול למחוק סקר' });
+      if (!form) return res.status(403).json({ error: 'רק יוצר הסקר או מנהל קבוצה יכולים למחוק' });
       if (form.form_type !== 'survey')
         return res.status(400).json({ error: 'ניתן למחוק סקרים בלבד' });
       // Keep message identifiers and reply references valid, using the existing

@@ -47,6 +47,24 @@ test('push text uses original catalog labels while preserving surrounding conten
   assert.equal(inlineEmojiPlainText('https://example.test/ שלום'), 'https://example.test/ שלום');
 });
 
+test('color metadata is readable in notifications and searchable as visible text', () => {
+  const wire = 'ש[[bt-style:fg=1976D2;bg=FFF59D]]לום [[bt-emoji:001]][[/bt-style]]';
+  assert.equal(inlineEmojiPlainText(wire), 'שלום [שמחה]');
+  assert.equal(inlineEmojiModerationText(wire), 'שלום  ');
+  assert.equal(inlineEmojiPlainText('[[bt-style:fg=1976D2]]a[[bt-style:bg=FFF59D]]b[[/bt-style]]c[[/bt-style]]'), 'abc');
+  for (const text of [
+    '[[bt-style:fg=1976D2]]', '[[/bt-style]]',
+    '[[bt-style:fg=oops]]hello[[/bt-style]]',
+    '[[bt-style:fg=1976D2;fg=C62828]]hello[[/bt-style]]',
+    '`[[bt-style:fg=1976D2]]literal[[/bt-style]]`',
+  ]) assert.equal(inlineEmojiPlainText(text), text);
+});
+
+test('existing moderation sees words whose letters have different colors', () => {
+  assert.equal(moderateChatText('i will ki[[bt-style:fg=1976D2]]ll you[[/bt-style]]').blocked, true);
+  assert.equal(moderateChatText('ש[[bt-style:bg=FFF59D]]לום[[/bt-style]]').blocked, false);
+});
+
 test('push labels have a readable fallback without the optional catalog', () => {
   const helper = fs.readFileSync(require.resolve('../server/inline-custom-emoji'), 'utf8');
   const exports = vm.runInNewContext(`${helper}; module.exports`, {
@@ -108,11 +126,11 @@ test('actual push sends readable labels without mutating persisted wire text', a
     }),
     console: { error(...args) { assert.fail(args.join(' ')); } },
   });
-  const wire = 'שלום [[bt-emoji:001]]';
+  const wire = '[[bt-style:fg=1976D2;bg=FFF59D]]שלום [[bt-emoji:001]][[/bt-style]]';
   await sendPush('recipient', 'Sender', wire, { type: 'chat', fromUserId: 'sender' });
   assert.equal(sent.length, 1);
   assert.equal(sent[0].notification.body, 'שלום [שמחה]');
-  assert.equal(wire, 'שלום [[bt-emoji:001]]');
+  assert.equal(wire, '[[bt-style:fg=1976D2;bg=FFF59D]]שלום [[bt-emoji:001]][[/bt-style]]');
 });
 
 async function privateSend(text, { allowText = true, linkError } = {}) {

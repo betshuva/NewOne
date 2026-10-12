@@ -1,9 +1,12 @@
 const { SCHEMA: EDUCATION_EDIT_SCHEMA, registerEducationFormEditing } = require('./education-form-edit');
 const { SCHEMA: EDUCATION_SURVEY_SCHEMA, registerEducationSurveyManagement } = require('./education-survey-management');
 const { normalizeQuestionSelection, normalizeSurveyAnswers } = require('./education-survey-questions');
+const { denyTeenEducation, createEducationFormPolicy } = require('./education-form-policy');
+const { listingDetailFilters, parseListingPriceBounds, parseListingRadius } = require('./listing-search-filters');
 const { SCHEMA: FILTER_PIN_SCHEMA, registerFilterPin, requireFilterPin, filterPinQuery, resolveFriendAcceptanceFilter } = require('./filter-pin');
 const { attachmentUpload, cleanAttachment, resumableAttachments } = require('./attachment-upload');
 const storageQuota = require('./storage-quota');
+const { SCHEMA: AUTOMATIC_RESTORE_SCHEMA, createAutomaticRestoreQueue, createVerificationLock } = require('./automatic-restore-queue');
 const { ARCHIVABLE_SQL } = require('./media-storage-policy');
 const { sourceHash, sourceBlob, uploadHeader } = require('./upload-file-source');
 const { chatHistoryWindow, chatHistoryQuery } = require('./chat-history-window');
@@ -80,6 +83,7 @@ const { ensureAuditScanPreviewSchema, saveAuditScanPreview, purgeExpiredAuditSca
 const { runBoundedVideoScan, stoppedVideoResult, videoProviderStop } = require('./video-scan-controller');
 const { createVisualFingerprint, visuallyEquivalent } =
   require('./visual-fingerprint');
+const imageAnimationPolicy = require('./image-animation-policy');
 const {
   configuredFolderId,
   googleDriveConfigured,
@@ -107,10 +111,14 @@ const { convertRecordedAudio } = require('./recorded-audio');
 const { SHORT_USER_ID_SCHEMA, shortenCapturedFileName } = require('./user-short-id');
 const { encryptMessageText, decryptMessageText } = require('./message-at-rest');
 const { inlineEmojiModerationText, inlineEmojiPlainText } = require('./inline-custom-emoji');
+const { extractKeyboardEmoji, createKeyboardEmojiArtworkLoader, ARTWORK_VERSION } =
+  require('./unicode-emoji-artwork');
+const { createUnicodeEmojiModerator } = require('./unicode-emoji-moderation');
 const {
   DEFAULT_CONTENT_FILTER,
   NEW_ACCOUNT_CONTENT_FILTER,
   contentAllowedByFilter,
+  combineMessageClassifications,
   imageAllowedByFilter,
   isUnfilteredAssistantConversation,
   normalizeContentFilter,
@@ -142,6 +150,7 @@ const { notifyGuideRejectedSend } = require('./guide-rejection-notice');
 const { guideFileId, loadOwnedGuideFile, readGuideFileBytes,
   persistGuideSpreadsheetReply, registerGuideFileRoutes } = require('./guide-files');
 const { generateSafeInformationAnswer } = require('./safe-information-ai');
+const { createAiPresentation, readAiPresentation } = require('./ai-presentation');
 const { searchMarketplace } = require('./ai-marketplace');
 const { loadMarketplaceImages } = require('./marketplace-images');
 const { initializePhonePrivacy, projectContactPhones, saveContactWithPhone,
@@ -162,7 +171,11 @@ async function projectContactProfiles(pool, viewerId, rows, options) {
 }
 
 async function recipientMediaMessage(pool, userId, message) {
-  if (!message.fileUrl && !message.file_url) return message;
+  const hasFile = message.fileUrl || message.file_url;
+  const replyBody = message.replyBody || message.reply_body;
+  const hasVisualReply = replyBody && extractKeyboardEmoji(replyBody)
+    .some(glyph => !glyph.knownApproved);
+  if (!hasFile && message.classification?.inlineEmoji !== true && !hasVisualReply) return message;
   const hidden = { ...message, fileUrl: null, file_url: null, text: null, body: null,
     filter_hidden: true, hidden_reason: 'content_filter' };
   let filtered;
@@ -174,6 +187,7 @@ async function recipientMediaMessage(pool, userId, message) {
     return hidden;
   }
   if (!filtered.length) return hidden;
+  if (!hasFile || filtered[0].filter_hidden) return filtered[0];
   try {
     const personalized = await personalizeReceivedMessages(pool, userId, filtered);
     return personalized[0] || filtered[0];
@@ -1150,6 +1164,26 @@ function moderateChatText(value) {
   return { blocked: false };
 }
 
+async function inspectUnicodeEmojiText(text, userId) {
+  return unicodeEmojiModerator.inspect(text, { userId });
+}
+
+// Receipt and guide wrappers call this before opening their transaction. The
+// inner handler reuses only the result for precisely the same visible text.
+async function prepareUnicodeEmojiMessage(req) {
+  const text = String(req.body?.text || '');
+  const textHash = crypto.createHash('sha256').update(text.trim()).digest('hex');
+  if (req.unicodeEmojiScan?.textHash === textHash)
+    return req.unicodeEmojiScan.classification;
+  const ignoredStickerText = req.body?.stickerId != null;
+  const harmfulText = ![SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID]
+    .includes(req.body?.toUserId) && moderateChatText(text).blocked;
+  const classification = ignoredStickerText || harmfulText ? null
+    : await inspectUnicodeEmojiText(text, req.user.id);
+  req.unicodeEmojiScan = { textHash, classification };
+  return classification;
+}
+
 function redactHarmfulLanguageForDisplay(value) {
   return String(value || '').replace(/טמבל(?:ים|ית)?/giu, 'מילה פוגענית');
 }
@@ -1915,16 +1949,7 @@ async function scanStrictModesty(buffer, classification) {
 }
 
 function isPotentiallyAnimatedImage(buffer) {
-  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return false;
-  const magic = buffer.subarray(0, 12).toString('ascii');
-  // GIF scanning in the current model stack only evaluates the first frame,
-  // so reject GIF files rather than allow later frames to bypass moderation.
-  if (magic.startsWith('GIF87a') || magic.startsWith('GIF89a')) return true;
-  if (magic.startsWith('RIFF') && magic.slice(8, 12) === 'WEBP')
-    return buffer.indexOf(Buffer.from('ANIM')) >= 0 || buffer.indexOf(Buffer.from('ANMF')) >= 0;
-  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])))
-    return buffer.indexOf(Buffer.from('acTL')) >= 0;
-  return false;
+  return imageAnimationPolicy.potentialAnimationFormat(buffer) !== null;
 }
 
 
@@ -2319,8 +2344,16 @@ async function scanStaticImage(buffer, options = {}) {
 
 // Increment whenever moderation models, prompts, thresholds or policy meaning
 // change. Exact-file cache entries from older versions are never reused.
-const MODERATION_CACHE_VERSION = `2026-10-08-visible-areas-review-22:${moderationProviderPolicy()}`;
+const MODERATION_CACHE_VERSION = `2026-10-13-animated-frame-policy-23:${moderationProviderPolicy()}`;
 const VIDEO_SCAN_VERSION = `${MODERATION_CACHE_VERSION}:video20-90min-v1`;
+const unicodeEmojiModerator = createUnicodeEmojiModerator({
+  extractEmoji: extractKeyboardEmoji,
+  loadArtwork: createKeyboardEmojiArtworkLoader(),
+  scanImage: (buffer, options) => scanImage(buffer, options),
+  moderationVersion: MODERATION_CACHE_VERSION,
+  artworkVersion: ARTWORK_VERSION,
+  recordCheck: event => recordProviderCheck(event),
+});
 
 async function scanImage(buffer, options = {}) {
   // Recognize exact library bytes before invoking any content-analysis provider.
@@ -2328,6 +2361,16 @@ async function scanImage(buffer, options = {}) {
   options = { ...options, reviewState: options.reviewState || createImageReviewState() };
   if (!isPotentiallyAnimatedImage(buffer))
     return scanStaticImage(buffer, options);
+
+  // Sharp currently decodes APNG as a static PNG. Never approve an animation
+  // whose remaining frames cannot pass the same checks as the first frame.
+  if (imageAnimationPolicy.potentialAnimationFormat(buffer) === 'apng') return {
+    blocked: true,
+    blockedBy: 'animatedPngUnsupported',
+    reason: 'תמונת PNG מונפשת (APNG) אינה נתמכת בסריקה. אפשר לשלוח GIF או WebP עם עד 12 פריימים',
+    animated: true,
+    framesScanned: 0,
+  };
 
   let metadata;
   try {
@@ -2371,10 +2414,12 @@ async function scanImage(buffer, options = {}) {
     }
     const result = await scanStaticImage(frame, options);
     frameResults.push(result);
-    if (result.scanStopped) return { ...result, animated: true, frameResults,
+    const classification = imageAnimationPolicy.mergedFrameClassification(frameResults);
+    if (result.scanStopped) return { ...result, classification, animated: true, frameResults,
       frameCount, framesScanned: page + 1 };
     if (result.blocked) return {
       ...result,
+      classification,
       frameResults,
       reason: `GIF נחסם בפריים ${page + 1}: ${result.reason || 'תוכן לא מאושר'}`,
       frameCount,
@@ -2382,21 +2427,23 @@ async function scanImage(buffer, options = {}) {
     };
     if (result.pending) return {
       ...result,
+      classification,
       frameResults,
       reason: `סריקת GIF ממתינה בפריים ${page + 1}: ${result.reason || 'שירות הסריקה אינו זמין'}`,
       frameCount,
       framesScanned: page + 1,
     };
   }
-  return {
+  return imageClassificationOutcome({
     ...frameResults[0],
+    classification: imageAnimationPolicy.mergedFrameClassification(frameResults),
     blocked: false,
     blockedBy: null,
     animated: true,
     frameResults,
     frameCount,
     framesScanned: frameCount,
-  };
+  });
 }
 
 async function scanDocument(buffer, mimetype, options = {}) {
@@ -3310,6 +3357,7 @@ async function migrateDatabase() {
       ON media_backup_items(user_id, status)`);
     await pool.query(`ALTER TABLE media_backup_items
       ADD COLUMN IF NOT EXISTS restore_verified_at TIMESTAMPTZ`);
+    await pool.query(AUTOMATIC_RESTORE_SCHEMA);
     await pool.query(`ALTER TABLE media_backup_items
       ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`
@@ -3578,6 +3626,7 @@ async function generateSafeInformationSystemAnswer(pool, userId, question) {
       content: row.body || '',
     }));
     return await generateSafeInformationAnswer({
+      includePresentation: true,
       apiKey,
       model: process.env.SAFE_INFORMATION_MODEL ||
         process.env.AI_GUIDE_MODEL || process.env.OPENAI_VISION_MODEL ||
@@ -3818,12 +3867,18 @@ async function createSystemExchange(pool, userId, question, file = null,
       return { sent: sent.rows[0], reply: reply.rows[0], answer };
     }
   }
-  const answer = redactHarmfulLanguageForDisplay(generated);
+  const answer = redactHarmfulLanguageForDisplay(
+    assistantId === SAFE_INFORMATION_USER_ID && typeof generated?.answer === 'string'
+      ? generated.answer : generated);
+  const aiPresentation = assistantId === SAFE_INFORMATION_USER_ID && Array.isArray(generated?.aiPresentation?.citations)
+    ? createAiPresentation(answer, generated.aiPresentation.citations.map(citation => ({ ...citation,
+      title: redactHarmfulLanguageForDisplay(citation.title) }))) : null;
   const reply = await pool.query(
-    `INSERT INTO messages(sender_id,recipient_id,type,body,audit_operation_id,audit_parent_event_id)
-     VALUES($1,$2,'text',$3,$4,$5) RETURNING id,created_at`,
-    [assistantId, userId, answer, ...auditIds()]);
-  return { sent: sent.rows[0], reply: reply.rows[0], answer };
+    `INSERT INTO messages(sender_id,recipient_id,type,body,audit_operation_id,audit_parent_event_id,delivery_summary)
+     VALUES($1,$2,'text',$3,$4,$5,$6) RETURNING id,created_at`,
+    [assistantId, userId, answer, ...auditIds(), aiPresentation
+      ? JSON.stringify({ aiPresentation: encryptMessageText(JSON.stringify(aiPresentation)) }) : null]);
+  return { sent: sent.rows[0], reply: reply.rows[0], answer, ...(aiPresentation ? { aiPresentation } : {}) };
 }
 
 // ── Activity logger ───────────────────────────────────────────────
@@ -4626,6 +4681,8 @@ io.on('connection', async (socket) => {
     }
     try {
       const pool = await getPool();
+      const emojiClassification = !normalizedStickerId && text
+        ? await inspectUnicodeEmojiText(text, socket.user.id) : null;
       if ([SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId)) {
         let input;
         try { input = await resolveSystemInput(pool, socket.user.id, toUserId,
@@ -4645,6 +4702,7 @@ io.on('connection', async (socket) => {
           id: exchange.reply.id, fromUserId: toUserId,
           fromName: toUserId === SYSTEM_USER_ID ? SYSTEM_USER_NAME
             : SAFE_INFORMATION_USER_NAME, text: exchange.answer,
+          ...(exchange.aiPresentation ? { aiPresentation: exchange.aiPresentation } : {}),
           fileType: exchange.file?.type || 'text',
           fileUrl: exchange.file?.url, fileName: exchange.file?.name,
           fileSize: exchange.file?.size,
@@ -4673,8 +4731,8 @@ io.on('connection', async (socket) => {
         if (fileUrl && fileName && /\.(pdf|docx?)$/i.test(fileName)) return 'document';
         return 'text';
       })();
-      const classification = fileUrl
-        ? await getStoredImageClassification(pool, fileUrl) : null;
+      const classification = combineMessageClassifications(fileUrl
+        ? await getStoredImageClassification(pool, fileUrl) : null, emojiClassification, fileUrl ? msgType : null);
       if (listingId) await registerListingInquiry(pool,socket.user.id,toUserId,listingId);
       let recipientPolicy = await getEffectiveRecipientFilter(
         pool, toUserId, socket.user.id);
@@ -4700,6 +4758,7 @@ io.on('connection', async (socket) => {
         const request = await queueContactRequest(pool, {
           senderId: socket.user.id, recipientId: toUserId, body: text, type: msgType,
           fileUrl, fileName, operationId: auditIds()[0], parentEventId: auditIds()[1],
+          emojiClassification,
         });
         if (request) {
           relay(toUserId, 'message:request', { id: request.id, senderId: socket.user.id,
@@ -4728,10 +4787,12 @@ io.on('connection', async (socket) => {
       const saved = await writeSenderFilteredMedia(pool, { userId: socket.user.id, fileUrl,
       contextType: 'chat', contextId: toUserId }, client => writeFriendshipMessage(
         client, socket.user.id, toUserId, db => db.query(
-        `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id, delivery_summary)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING id, created_at`,
-        [socket.user.id, toUserId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null, ...auditIds()])));
+        [socket.user.id, toUserId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null, ...auditIds(),
+          emojiClassification
+            ? JSON.stringify({ inlineEmojiClassification: emojiClassification }) : null])));
       const row = saved.rows[0];
       if (saved.friendshipChanged) notifyFriendshipChange(socket.user.id,toUserId);
       await pool.query(
@@ -4751,7 +4812,7 @@ io.on('connection', async (socket) => {
         id: row.id, fromUserId: socket.user.id, fromName: socket.user.name,
         text, replyToId: replyToId || null, createdAt: row.created_at,
         fileUrl, fileName, fileType: msgType, stickerId: normalizedStickerId,
-        classification: await getStoredImageClassification(pool, fileUrl),
+        classification,
       }));
       // שליפת שם הנמען לרישום קריא בפעילות
       const recip = await pool.query('SELECT name FROM users WHERE id=$1', [toUserId]);
@@ -4759,10 +4820,16 @@ io.on('connection', async (socket) => {
       logActivity(socket.user.id, fileUrl ? 'send_file' : 'send_message',
         { to: toName, toUserId, messageId: row.id, type: fileType || 'text', fileName: fileName || null });
       const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
-      sendPush(toUserId, socket.user.name, pushBody,
+      const pushVisible = !emojiClassification || !(await recipientMediaMessage(pool, toUserId,
+        { id: row.id, fromUserId: socket.user.id, text, fileUrl, fileType: msgType, classification })).filter_hidden;
+      if (pushVisible) sendPush(toUserId, socket.user.name, pushBody,
         { type: 'chat', fromUserId: socket.user.id });
     } catch (e) {
       console.error('chat:message save:', e.message);
+      if (e.code === 'UNSUPPORTED_EMOJI' || e.code?.startsWith('EMOJI_')) {
+        await emitDispatchRejection(getPool, socket, { toUserId, code: e.code, reason: e.message });
+        return;
+      }
       if (e.code === 'SENDER_CONTENT_FILTERED') {
         await notifyRejectedSend(await getPool(), { userId: socket.user.id, toUserId, fileUrl, error: e });
         await emitDispatchRejection(getPool,socket, { toUserId, fileUrl, code: e.code,
@@ -4829,6 +4896,8 @@ io.on('connection', async (socket) => {
       if (!member) { await emitDispatchRejection(getPool,socket,{groupId,code:'NOT_GROUP_MEMBER',reason:'השולח אינו חבר בקבוצה'});return; }
       if (member.send_permission === 'admin' && member.role !== 'admin') { await emitDispatchRejection(getPool,socket,{groupId,code:'GROUP_ADMIN_ONLY',reason:'רק מנהלי הקבוצה רשאים לשלוח הודעות'});return; }
 
+      const emojiClassification = !normalizedStickerId && text
+        ? await inspectUnicodeEmojiText(text, socket.user.id) : null;
       const storedType = fileUrl ? (await pool.query(
         'SELECT file_type FROM stored_files WHERE public_url=$1', [fileUrl])).rows[0]?.file_type : null;
       const msgType = storedType || (normalizedStickerId ? 'sticker' : fileType && fileType !== 'text'
@@ -4836,8 +4905,8 @@ io.on('connection', async (socket) => {
         : (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName) ? 'image'
           : fileUrl ? 'document' : 'text'));
 
-      const classification = fileUrl
-        ? await getStoredImageClassification(pool, fileUrl) : null;
+      const classification = combineMessageClassifications(fileUrl
+        ? await getStoredImageClassification(pool, fileUrl) : null, emojiClassification, fileUrl ? msgType : null);
       const effectiveGroupFilter = await getGroupContentFilter(pool, groupId);
       if (!contentAllowedByFilter(effectiveGroupFilter,
           msgType === 'sticker' ? 'text' : msgType, classification)) {
@@ -4861,16 +4930,20 @@ io.on('connection', async (socket) => {
 
       const saved = await writeSenderFilteredMedia(pool, { userId: socket.user.id, fileUrl,
       contextType: 'group', contextId: groupId }, client => client.query(
-        `INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id, delivery_summary)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING id, created_at`,
-        [socket.user.id, groupId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null, ...auditIds()]));
+        [socket.user.id, groupId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null, ...auditIds(),
+          emojiClassification
+            ? JSON.stringify({ inlineEmojiClassification: emojiClassification }) : null]));
       const row = saved.rows[0];
       const deliveryPlan = await buildGroupDeliveryPlan(
         pool, groupId, socket.user.id, msgType, classification,
         { messageId: row.id, fileUrl });
       await pool.query('UPDATE messages SET delivery_summary=$1 WHERE id=$2',
-        [JSON.stringify(deliveryPlan.summary), row.id]);
+        [JSON.stringify({ ...deliveryPlan.summary,
+          ...(emojiClassification
+            ? { inlineEmojiClassification: emojiClassification } : {}) }), row.id]);
       await notifyGroupFilterBlocks(pool, { userId: socket.user.id, groupId,
         fileUrl, deliveryPlan });
       const outgoingGroupMessage = {
@@ -4901,11 +4974,18 @@ io.on('connection', async (socket) => {
       const groupName = grpName.rows[0]?.name || 'קבוצה';
       const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
       for (const recipient of deliveryPlan.delivered) {
-          sendPush(recipient.id, `${groupName} • ${socket.user.name}`,
-            pushBody, { type: 'group', groupId });
+        const visible = !emojiClassification || !(await recipientMediaMessage(
+          pool, recipient.id, recipientGroupMessage)).filter_hidden;
+        if (visible) sendPush(recipient.id, `${groupName} • ${socket.user.name}`,
+          pushBody, { type: 'group', groupId });
       }
     } catch (e) {
       console.error('group:message:', e.message);
+      if (e.code === 'UNSUPPORTED_EMOJI' || e.code?.startsWith('EMOJI_')) {
+        await emitDispatchRejection(getPool, socket, { groupId, clientMessageId,
+          code: e.code, reason: e.message });
+        return;
+      }
       if (e.code === 'SENDER_CONTENT_FILTERED') {
         await notifyRejectedSend(await getPool(), { userId: socket.user.id, groupId, fileUrl, error: e });
         await emitDispatchRejection(getPool,socket, {
@@ -5820,6 +5900,8 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         receipt.client_message_id,
         CASE WHEN sf.user_id=$1 THEN sf.client_upload_id END AS client_upload_id,
         m.body, m.file_url, m.file_name, m.file_size,
+        CASE WHEN m.sender_id='${SAFE_INFORMATION_USER_ID}' AND m.group_id IS NULL
+          THEN m.delivery_summary->'aiPresentation' END AS "aiPresentation",
         m.reply_to_id, m.created_at,
         (m.delivery_summary->'guideFilterNotice'->>'key') IS NOT NULL AS _guide_filter_notice,
         r.body        AS reply_body,
@@ -5976,8 +6058,9 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
       .slice(historyWindow.extended ? 0 : -50)
       .map(row => {
-        const { _moderation_details, ...safe } = row;
-        return projectGuideFilterNotice(safe, myId, SYSTEM_USER_ID);
+        const { _moderation_details, aiPresentation: storedPresentation, ...safe } = row;
+        const aiPresentation = storedPresentation ? readAiPresentation(storedPresentation, safe.body) : null;
+        return projectGuideFilterNotice({ ...safe, ...(aiPresentation ? { aiPresentation } : {}) }, myId, SYSTEM_USER_ID);
       });
     res.json(combined);
   } catch (e) {
@@ -6018,6 +6101,7 @@ async function sendPrivateHttpMessage(req, res) {
   }
   try {
     const pool = req.messagePool || await getPool();
+    const emojiClassification = await prepareUnicodeEmojiMessage(req);
     if ([SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId)) {
       let input;
       try { input = await resolveSystemInput(pool, senderId, toUserId,
@@ -6036,6 +6120,7 @@ async function sendPrivateHttpMessage(req, res) {
         id: exchange.reply.id, fromUserId: toUserId,
         fromName: toUserId === SYSTEM_USER_ID ? SYSTEM_USER_NAME
           : SAFE_INFORMATION_USER_NAME, text: exchange.answer,
+        ...(exchange.aiPresentation ? { aiPresentation: exchange.aiPresentation } : {}),
         fileType: exchange.file?.type || 'text',
         fileUrl: exchange.file?.url, fileName: exchange.file?.name,
         fileSize: exchange.file?.size,
@@ -6044,6 +6129,7 @@ async function sendPrivateHttpMessage(req, res) {
       return res.json({ id: exchange.sent.id,
         createdAt: exchange.sent.created_at, status: 'read',
         systemReply: { id: exchange.reply.id, text: exchange.answer, fromUserId: toUserId,
+          ...(exchange.aiPresentation ? { aiPresentation: exchange.aiPresentation } : {}),
           fileType: exchange.file?.type || 'text', fileUrl: exchange.file?.url,
           fileName: exchange.file?.name, fileSize: exchange.file?.size,
           createdAt: exchange.reply.created_at } });
@@ -6067,8 +6153,8 @@ async function sendPrivateHttpMessage(req, res) {
       if (fileUrl && fileName && /\.(pdf|docx?)$/i.test(fileName)) return 'document';
       return 'text';
     })();
-    const classification = fileUrl
-      ? await getStoredImageClassification(pool, fileUrl) : null;
+    const classification = combineMessageClassifications(fileUrl
+      ? await getStoredImageClassification(pool, fileUrl) : null, emojiClassification, fileUrl ? type : null);
     if (listingId) await registerListingInquiry(pool,senderId,toUserId,listingId);
     let recipientPolicy = await getEffectiveRecipientFilter(
       pool, toUserId, senderId);
@@ -6093,6 +6179,7 @@ async function sendPrivateHttpMessage(req, res) {
       const request = await queueContactRequest(pool, {
         senderId, recipientId: toUserId, body: text, type, fileUrl, fileName,
         operationId: auditIds()[0], parentEventId: auditIds()[1],
+        emojiClassification,
       });
       if (request) {
         effect(() => relay(toUserId, 'message:request', { id: request.id, senderId,
@@ -6115,10 +6202,12 @@ async function sendPrivateHttpMessage(req, res) {
     const saved = await writeSenderFilteredMedia(pool, { userId: senderId, fileUrl,
       contextType: 'chat', contextId: toUserId }, client => writeFriendshipMessage(
       client, senderId, toUserId, db => db.query(
-      `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id, delivery_summary)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id, created_at`,
-      [senderId, toUserId, text || null, type, fileUrl || null, fileName || null, replyToId || null, ...auditIds()])));
+      [senderId, toUserId, text || null, type, fileUrl || null, fileName || null, replyToId || null, ...auditIds(),
+        emojiClassification
+          ? JSON.stringify({ inlineEmojiClassification: emojiClassification }) : null])));
     const row = saved.rows[0];
     if (saved.friendshipChanged) effect(() => notifyFriendshipChange(senderId,toUserId));
 
@@ -6149,7 +6238,8 @@ async function sendPrivateHttpMessage(req, res) {
         text, replyToId: replyToId || null, replyBody, createdAt: row.created_at,
         fileUrl, fileName, fileType: type, stickerId: normalizedStickerId, classification,
       });
-      effect(() => io.to(sid).emit('chat:message', recipientMessage));
+      effect(async () => io.to(sid).emit('chat:message', emojiClassification
+        ? await recipientMediaMessage(pool, toUserId, recipientMessage) : recipientMessage));
     }
 
     const recip = await pool.query('SELECT name FROM users WHERE id=$1', [toUserId]);
@@ -6158,8 +6248,11 @@ async function sendPrivateHttpMessage(req, res) {
       { to: toName, toUserId, messageId: row.id, type, fileName: fileName || null }));
 
     const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
-    effect(() => sendPush(toUserId, req.user.name, pushBody,
-      { type: 'chat', fromUserId: senderId }));
+    effect(async () => {
+      if (emojiClassification && (await recipientMediaMessage(pool, toUserId,
+          { id: row.id, fromUserId: senderId, text, fileUrl, fileType: type, classification })).filter_hidden) return;
+      await sendPush(toUserId, req.user.name, pushBody, { type: 'chat', fromUserId: senderId });
+    });
 
     const marketplaceInquiry = listingId ? await pool.query(
       `SELECT 1 FROM listings WHERE id=$1 AND user_id=$2 AND status='active' AND expires_at>now()`,
@@ -6177,11 +6270,13 @@ async function sendPrivateHttpMessage(req, res) {
 }
 app.post('/api/messages', auth, messageRateLimit, withPrivateMessageReceipt({
   getPool, sendMessage: sendPrivateHttpMessage,
+  preflight: prepareUnicodeEmojiMessage,
   excludedRecipients: [SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID, SCAN_BOT_ID],
 }));
 registerGuideMessageSend(app, { auth, rateLimit: messageRateLimit, getPool,
   systemUserId: SYSTEM_USER_ID, safeInformationUserId: SAFE_INFORMATION_USER_ID, scanBotId: SCAN_BOT_ID,
-  sendMessage: sendPrivateHttpMessage, sendGroupMessage: sendGroupHttpMessage });
+  sendMessage: sendPrivateHttpMessage, sendGroupMessage: sendGroupHttpMessage,
+  preflight: prepareUnicodeEmojiMessage });
 
 app.get('/api/message-requests', authWithDbCheck, async (req, res) => {
   try {
@@ -6415,31 +6510,64 @@ app.patch('/api/messages/:id', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const found = await pool.query(
-      'SELECT sender_id, recipient_id, group_id, type FROM messages WHERE id=$1 AND deleted_for_everyone=FALSE',
+      'SELECT sender_id, recipient_id, group_id, type, delivery_summary FROM messages WHERE id=$1 AND deleted_for_everyone=FALSE',
       [req.params.id]);
     const msg = found.rows[0];
     if (!msg) return res.status(404).json({ error: 'הודעה לא נמצאה' });
     if (msg.sender_id !== req.user.id) return res.status(403).json({ error: 'אין הרשאה לערוך' });
     if (msg.type !== 'text') return res.status(400).json({ error: 'ניתן לערוך הודעות טקסט בלבד' });
+    if (msg.group_id) {
+      const access = await pool.query(`SELECT gm.role, g.send_permission
+        FROM group_members gm JOIN groups g ON g.id=gm.group_id
+        WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'`,
+      [msg.group_id, req.user.id]);
+      const member = access.rows[0];
+      if (!member || (member.send_permission === 'admin' && member.role !== 'admin'))
+        return res.status(403).json({ error: 'אין הרשאה לשלוח הודעות בקבוצה' });
+    }
+    await verifyMessageLinks(newBody);
+    const emojiClassification = await inspectUnicodeEmojiText(newBody, req.user.id);
+    if (msg.recipient_id) {
+      const policy = await getEffectiveRecipientFilter(pool, msg.recipient_id, req.user.id);
+      if (!contentAllowedByFilter(policy?.filter, 'text', emojiClassification))
+        return res.status(403).json({ error: 'סוג התוכן חסום בהגדרות הנמען',
+          code: 'RECIPIENT_CONTENT_FILTERED' });
+    }
+    if (msg.group_id && !contentAllowedByFilter(
+        await getGroupContentFilter(pool, msg.group_id), 'text', emojiClassification))
+      return res.status(403).json({ error: 'סוג התוכן חסום בהגדרות הסינון של הקבוצה',
+        code: 'GROUP_CONTENT_FILTERED' });
+    const summary = { ...(msg.delivery_summary || {}) };
+    delete summary.inlineEmojiClassification;
+    if (emojiClassification) summary.inlineEmojiClassification = emojiClassification;
     await pool.query(
-      'UPDATE messages SET body=$1, is_edited=TRUE, edited_at=now() WHERE id=$2',
-      [newBody, req.params.id]);
+      'UPDATE messages SET body=$1, is_edited=TRUE, edited_at=now(), delivery_summary=$3::jsonb WHERE id=$2',
+      [newBody, req.params.id, JSON.stringify(summary)]);
+    const editedMessage = { id: req.params.id, body: newBody, text: newBody,
+      fromUserId: req.user.id, fileType: 'text', classification: emojiClassification,
+      ...(msg.group_id ? { groupId: msg.group_id } : {}) };
     // Notify recipient (private chat)
     if (msg.recipient_id) {
       const sid = onlineUsers.get(msg.recipient_id);
-      if (sid) io.to(sid).emit('message:edited', { id: req.params.id, body: newBody });
+      if (sid) {
+        const visible = await recipientMediaMessage(pool, msg.recipient_id, editedMessage);
+        io.to(sid).emit('message:edited', { ...visible, body: visible.body ?? '' });
+      }
     }
     // Notify group members
     if (msg.group_id) {
-      const members = await pool.query('SELECT user_id FROM group_members WHERE group_id=$1', [msg.group_id]);
-      for (const { user_id } of members.rows) {
-        if (user_id === req.user.id) continue;
-        const sid = onlineUsers.get(user_id);
-        if (sid) io.to(sid).emit('message:edited', { id: req.params.id, body: newBody, groupId: msg.group_id });
+      const deliveryPlan = await buildGroupDeliveryPlan(pool, msg.group_id,
+        req.user.id, 'text', emojiClassification, { messageId: req.params.id });
+      for (const recipient of deliveryPlan.delivered) {
+        const sid = onlineUsers.get(recipient.id);
+        if (sid) {
+          const visible = await recipientMediaMessage(pool, recipient.id, editedMessage);
+          io.to(sid).emit('message:edited', { ...visible, body: visible.body ?? '' });
+        }
       }
     }
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.status || 500).json({ error: e.message, code: e.code }); }
 });
 
 app.delete('/api/contacts/:userId/friendship', authWithDbCheck, async (req,res) => {
@@ -8325,6 +8453,8 @@ app.get('/api/listings', auth, async (req, res) => {
     const pool = await getPool();
     const params = [];
     const addParam = (v) => { params.push(v); return `$${params.length}`; };
+    const priceBounds = parseListingPriceBounds(req.query);
+    const radiusKm = parseListingRadius(radius);
 
     let where = mine === 'true'
       ? `l.user_id = ${addParam(req.user.id)}`
@@ -8336,21 +8466,7 @@ app.get('/api/listings', auth, async (req, res) => {
     if (category) where += ` AND l.category=${addParam(category)}`;
     if (condition && ['new','like_new','good','fair','for_parts'].includes(condition))
       where += ` AND l.item_condition=${addParam(condition)}`;
-    if (category) {
-      const specialKeys = category === 'רכב'
-        ? ['manufacturer','model','year','fuel','transmission','color']
-        : category === 'נדל״ן'
-          ? ['deal_type','property_type','street','rooms','area_sqm','floor','entry_date','furniture']
-          : LISTING_CATEGORY_DETAIL_KEYS[category] || [];
-      const detailColumn = category === 'רכב' ? 'l.vehicle_details'
-        : category === 'נדל״ן' ? 'l.property_details' : 'l.category_details';
-      for (const key of specialKeys) {
-        const rawValue = req.query[`detail_${key}`];
-        if (typeof rawValue !== 'string' || !rawValue.trim()) continue;
-        const normalizedValue = rawValue.trim().slice(0, 120);
-        where += ` AND COALESCE(${detailColumn}->>${addParam(key)}, '') ILIKE ${addParam(`%${normalizedValue}%`)}`;
-      }
-    }
+    if (category) where += listingDetailFilters(req.query, category, LISTING_CATEGORY_DETAIL_KEYS, addParam);
     if (city && city !== 'כל הארץ') {
       const areaCities = {
         'אזור המרכז': ['תל אביב-יפו','ראשון לציון','פתח תקווה','בני ברק','חולון','רמת גן','רחובות','לוד','רמלה','גבעתיים','מודיעין','נס ציונה'],
@@ -8371,29 +8487,28 @@ app.get('/api/listings', auth, async (req, res) => {
         OR COALESCE(l.vehicle_details::text, '') ILIKE ${search}
         OR COALESCE(l.property_details::text, '') ILIKE ${search})`;
     }
-    const parsedMinPrice = Number(minPrice);
-    const parsedMaxPrice = Number(maxPrice);
-    if (minPrice !== undefined && Number.isFinite(parsedMinPrice) && parsedMinPrice >= 0)
-      where += ` AND l.price >= ${addParam(parsedMinPrice)}`;
-    if (maxPrice !== undefined && Number.isFinite(parsedMaxPrice) && parsedMaxPrice >= 0)
-      where += ` AND l.price <= ${addParam(parsedMaxPrice)}`;
+    const searchPrice = "(CASE WHEN l.type='free' THEN 0 ELSE l.price END)";
+    if (priceBounds.minimum !== null) where += ` AND ${searchPrice} >= ${addParam(priceBounds.minimum)}`;
+    if (priceBounds.maximum !== null) where += ` AND ${searchPrice} <= ${addParam(priceBounds.maximum)}`;
 
     let distExpr = 'NULL';
-    if (radius) {
+    if (radiusKm > 0) {
       const me = await pool.query('SELECT latitude, longitude FROM users WHERE id=$1', [req.user.id]);
-      const { latitude: myLat, longitude: myLng } = me.rows[0] || {};
-      if (myLat && myLng) {
-        const pLat = addParam(myLat), pLng = addParam(myLng), pRadius = addParam(parseFloat(radius));
-        const distFormula = `ROUND((6371*ACOS(COS(RADIANS(${pLat}))*COS(RADIANS(l.latitude))*COS(RADIANS(l.longitude)-RADIANS(${pLng}))+SIN(RADIANS(${pLat}))*SIN(RADIANS(l.latitude))))::numeric,1)`;
-        where += ` AND l.latitude IS NOT NULL AND (${distFormula}) <= ${pRadius}`;
-        distExpr = distFormula;
-      }
+      const location = me.rows[0];
+      const myLat = Number(location?.latitude), myLng = Number(location?.longitude);
+      if (location?.latitude == null || location?.longitude == null || !Number.isFinite(myLat) || !Number.isFinite(myLng) ||
+          Math.abs(myLat) > 90 || Math.abs(myLng) > 180)
+        return res.status(400).json({ error: 'כדי לחפש לפי רדיוס יש לעדכן מיקום בפרופיל', code: 'LISTING_LOCATION_REQUIRED' });
+      const pLat = addParam(myLat), pLng = addParam(myLng), pRadius = addParam(radiusKm);
+      const distFormula = `ROUND((6371*ACOS(LEAST(1.0,GREATEST(-1.0,COS(RADIANS(${pLat}))*COS(RADIANS(l.latitude))*COS(RADIANS(l.longitude)-RADIANS(${pLng}))+SIN(RADIANS(${pLat}))*SIN(RADIANS(l.latitude))))))::numeric,1)`;
+      where += ` AND l.latitude IS NOT NULL AND l.longitude IS NOT NULL AND (${distFormula}) <= ${pRadius}`;
+      distExpr = distFormula;
     }
 
     const orderBy = sort === 'price_asc'
-      ? 'l.price ASC NULLS LAST, l.created_at DESC'
+      ? `${searchPrice} ASC NULLS LAST, l.created_at DESC`
       : sort === 'price_desc'
-        ? 'l.price DESC NULLS LAST, l.created_at DESC'
+        ? `${searchPrice} DESC NULLS LAST, l.created_at DESC`
         : 'l.created_at DESC';
     const result = await pool.query(`
       SELECT id, type, title, description, price, city,
@@ -8432,7 +8547,7 @@ app.get('/api/listings', auth, async (req, res) => {
       ORDER BY _q._rn`, params);
     res.set('Cache-Control', 'no-store');
     res.json(await projectProfileImages(pool, req.user.id, result.rows, { fields: ['seller_pic'] }));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.status || 500).json({ error: e.message, code: e.code }); }
 });
 
 // A compact chat preview must not register a marketplace view. It intentionally
@@ -9695,14 +9810,15 @@ async function sendGroupHttpMessage(req, res) {
     if (member.send_permission === 'admin' && member.role !== 'admin')
       return res.status(403).json({ error: 'רק מנהלי הקבוצה רשאים לשלוח הודעות' });
 
+    const emojiClassification = await prepareUnicodeEmojiMessage(req);
     const storedType = fileUrl ? (await pool.query(
       'SELECT file_type FROM stored_files WHERE public_url=$1', [fileUrl])).rows[0]?.file_type : null;
     const type = storedType || (fileType && fileType !== 'text'
       ? fileType
       : (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName)
         ? 'image' : fileUrl ? 'document' : 'text'));
-    const classification = fileUrl
-      ? await getStoredImageClassification(pool, fileUrl) : null;
+    const classification = combineMessageClassifications(fileUrl
+      ? await getStoredImageClassification(pool, fileUrl) : null, emojiClassification, fileUrl ? type : null);
     const effectiveGroupFilter = await getGroupContentFilter(pool, groupId);
     if (!contentAllowedByFilter(effectiveGroupFilter, type, classification)) {
       await recordFilterDecision(pool, { userId: senderId, actorId: senderId,
@@ -9724,16 +9840,20 @@ async function sendGroupHttpMessage(req, res) {
 
     const saved = await writeSenderFilteredMedia(pool, { userId: senderId, fileUrl,
       contextType: 'group', contextId: groupId }, client => client.query(
-      `INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id, delivery_summary)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id, created_at`,
       [senderId, groupId, text || null, type, fileUrl || null,
-       fileName || null, replyToId || null, ...auditIds()]));
+       fileName || null, replyToId || null, ...auditIds(),
+       emojiClassification
+         ? JSON.stringify({ inlineEmojiClassification: emojiClassification }) : null]));
     const row = saved.rows[0];
     const deliveryPlan = await buildGroupDeliveryPlan(
       pool, groupId, senderId, type, classification, { messageId: row.id, fileUrl });
     await pool.query('UPDATE messages SET delivery_summary=$1 WHERE id=$2',
-      [JSON.stringify(deliveryPlan.summary), row.id]);
+      [JSON.stringify({ ...deliveryPlan.summary,
+        ...(emojiClassification
+          ? { inlineEmojiClassification: emojiClassification } : {}) }), row.id]);
     const notifyBlocks = () => notifyGroupFilterBlocks(pool, { userId: senderId, groupId, fileUrl, deliveryPlan });
     if (req.messageEffects) req.messageEffects.push(notifyBlocks);
     else await notifyBlocks();
@@ -9761,9 +9881,14 @@ async function sendGroupHttpMessage(req, res) {
     effect(() => relay(senderId, 'group:message', payload));
     for (const recipient of deliveryPlan.delivered) {
         const visible = await recipientMediaMessage(pool, recipient.id, recipientPayload);
-        effect(() => relay(recipient.id, 'group:message', visible));
-        effect(() => sendPush(recipient.id, `${member.group_name} • ${req.user.name}`,
-          pushBody, { type: 'group', groupId }));
+        effect(async () => relay(recipient.id, 'group:message', emojiClassification
+          ? await recipientMediaMessage(pool, recipient.id, recipientPayload) : visible));
+        effect(async () => {
+          if (emojiClassification && (await recipientMediaMessage(
+              pool, recipient.id, recipientPayload)).filter_hidden) return;
+          await sendPush(recipient.id, `${member.group_name} • ${req.user.name}`,
+            pushBody, { type: 'group', groupId });
+        });
     }
     effect(() => logActivity(senderId, fileUrl ? 'send_file' : 'send_group_message', {
       groupId, messageId: row.id, fileName: fileName || null,
@@ -9802,7 +9927,13 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         CASE WHEN sf.user_id=$2 THEN sf.client_upload_id END AS client_upload_id,
         CASE WHEN m.sender_id=$2 THEN m.delivery_summary END AS delivery_summary,
         m.education_form_id, education_response.response_status AS education_response_status,
+        education_form.title AS education_form_title,
+        education_form.form_type AS education_form_type,
+        education_form.created_by AS education_form_creator_id,
         education_form.status AS education_form_status,
+        education_form.created_at AS education_form_created_at,
+        EXISTS(SELECT 1 FROM education_form_recipients recipient
+          WHERE recipient.form_id=m.education_form_id AND recipient.user_id=$2) AS education_is_recipient,
         u.name AS sender_name,
         r.body AS reply_body,
         CASE WHEN ms.status = 'read' THEN 1 ELSE 0 END AS is_read,
@@ -9908,14 +10039,18 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
 });
 
 // ── Groups: educational approvals, signatures and surveys ────────
-registerEducationFormEditing(app, { auth, getPool, io, sendPush });
+const educationFormPolicy = createEducationFormPolicy({ moderateChatText, recordBlockedChat, verifyMessageLinks,
+  linkBlockedMessage: LINK_BLOCKED_MESSAGE, getGroupContentFilter, contentAllowedByFilter,
+  getStoredImageClassification, validateApprovedFile, clientIp });
+registerEducationFormEditing(app, { auth, getPool, io, sendPush, ...educationFormPolicy });
 registerEducationSurveyManagement(app, { auth, getPool, io });
 app.get('/api/groups/:id/education-forms', auth, async (req, res) => {
+  if (denyTeenEducation(req, res)) return;
   try {
     const pool = await getPool();
     const access = await pool.query(
-      `SELECT role,status FROM group_members
-       WHERE group_id=$1 AND user_id=$2 AND status='member'`,
+      `SELECT gm.role,gm.status,g.send_permission FROM group_members gm JOIN groups g ON g.id=gm.group_id
+       WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'`,
       [req.params.id, req.user.id]);
     if (!access.rows.length) return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
     const isAdmin = access.rows[0].status === 'member' && access.rows[0].role === 'admin';
@@ -9924,6 +10059,8 @@ app.get('/api/groups/:id/education-forms', auth, async (req, res) => {
               creator.name AS creator_name,
               mine.response_status AS my_response_status,
               mine.submitted_at AS my_submitted_at,
+              EXISTS(SELECT 1 FROM education_form_recipients recipient
+                WHERE recipient.form_id=f.id AND recipient.user_id=$2) AS "isRecipient",
               (SELECT COUNT(*)::int FROM education_form_recipients recipient
                WHERE recipient.form_id=f.id) AS expected_count,
               (SELECT COUNT(*)::int FROM education_form_responses r
@@ -9938,14 +10075,19 @@ app.get('/api/groups/:id/education-forms', auth, async (req, res) => {
            WHERE recipient.form_id=f.id AND recipient.user_id=$2))
        ORDER BY (f.status='open') DESC, f.created_at DESC`,
       [req.params.id, req.user.id, isAdmin, access.rows[0].status === 'member']);
-    res.json({ forms: result.rows, isAdmin });
+    const canCreate = await educationFormPolicy.canSend(pool, req.params.id, access.rows[0]);
+    res.json({ forms: result.rows.map(form => ({ ...form,
+      isCreator: form.created_by === req.user.id,
+      canRespond: form.isRecipient,
+      canManage: isAdmin || form.created_by === req.user.id, canSend: canCreate })), isAdmin, canCreate });
   } catch (e) {
     console.error('education forms list:', e.message);
     res.status(500).json({ error: 'טעינת האישורים והסקרים נכשלה' });
   }
 });
 
-app.post('/api/groups/:id/education-forms', auth, async (req, res) => {
+app.post('/api/groups/:id/education-forms', auth, messageRateLimit, async (req, res) => {
+  if (denyTeenEducation(req, res)) return;
   const formType = String(req.body.formType || '');
   const title = String(req.body.title || '').trim();
   const description = String(req.body.description || '').trim();
@@ -9985,11 +10127,15 @@ app.post('/api/groups/:id/education-forms', auth, async (req, res) => {
   }
   try {
     const pool = await getPool();
-    const admin = await pool.query(
-      `SELECT g.name FROM groups g JOIN group_members gm ON gm.group_id=g.id
-       WHERE g.id=$1 AND gm.user_id=$2 AND gm.role='admin' AND gm.status='member'`,
+    const access = await pool.query(
+      `SELECT g.name,g.send_permission,gm.role FROM groups g JOIN group_members gm ON gm.group_id=g.id
+       WHERE g.id=$1 AND gm.user_id=$2 AND gm.status='member'`,
       [req.params.id, req.user.id]);
-    if (!admin.rows.length) return res.status(403).json({ error: 'רק מנהל קבוצה יכול ליצור טופס' });
+    if (!access.rows.length) return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
+    if (access.rows[0].send_permission === 'admin' && access.rows[0].role !== 'admin')
+      return res.status(403).json({ error: 'רק מנהלי הקבוצה רשאים לשלוח הודעות' });
+    await educationFormPolicy.validateContent(req, pool, req.params.id,
+      { title, description, questions: formType === 'survey' ? cleanQuestions : [], file_url: fileUrl, file_name: fileName });
     if (req.body.recipientIds !== undefined && !Array.isArray(req.body.recipientIds))
       return res.status(400).json({ error: 'רשימת הנמענים אינה תקינה' });
     const selectedIds = Array.isArray(req.body.recipientIds) ? req.body.recipientIds : null;
@@ -9997,19 +10143,11 @@ app.post('/api/groups/:id/education-forms', auth, async (req, res) => {
       return res.status(400).json({ error: 'רשימת הנמענים אינה תקינה' });
     const members = await pool.query(
       `SELECT user_id,status FROM group_members
-       WHERE group_id=$1 AND status IN ('member','pending') AND user_id<>$2
-         AND ($3::uuid[] IS NULL OR user_id=ANY($3::uuid[]))`,
-      [req.params.id, req.user.id, selectedIds]);
+       WHERE group_id=$1 AND status IN ('member','pending')
+         AND ($2::uuid[] IS NULL OR user_id=ANY($2::uuid[]))`,
+      [req.params.id, selectedIds]);
     if (selectedIds && members.rows.length !== new Set(selectedIds).size)
       return res.status(400).json({ error: 'יש לבחור חברים או מוזמנים לקבוצה' });
-    if (fileUrl) {
-      const allowedFile = await pool.query(`SELECT 1 FROM stored_files WHERE public_url=$1
-        AND moderation_status='approved' AND content_purged_at IS NULL
-        AND ((context_type='group' AND context_id=$2) OR user_id=$3)`,
-      [fileUrl, req.params.id, req.user.id]);
-      if (!allowedFile.rows.length)
-        return res.status(400).json({ error: 'יש לבחור קובץ מאושר שהועלה לאתר' });
-    }
     const inserted = await pool.query(
       `INSERT INTO education_forms
        (group_id,created_by,form_type,title,description,file_url,file_name,questions,anonymous,due_at)
@@ -10024,9 +10162,9 @@ app.post('/api/groups/:id/education-forms', auth, async (req, res) => {
          SELECT $1,unnest($2::uuid[]),now() ON CONFLICT DO NOTHING`,
         [inserted.rows[0].id, members.rows.map(row => row.user_id)]);
     }
-    const kind = formType === 'survey' ? 'סקר חדש' : formType === 'signature' ? 'מסמך חדש לחתימה' : 'אישור חדש';
-    for (const row of members.rows.filter(row => row.status === 'member')) {
-      sendPush(row.user_id, admin.rows[0].name, `${kind}: ${title}`, {
+    const kind = formType === 'survey' ? 'סקר' : formType === 'signature' ? 'מסמך לחתימה' : 'אישור';
+    for (const row of members.rows.filter(row => row.status === 'member' && row.user_id !== req.user.id)) {
+      sendPush(row.user_id, access.rows[0].name, `${kind}: ${title}`, {
         type: 'education_form', groupId: req.params.id, formId: inserted.rows[0].id,
       });
     }
@@ -10043,28 +10181,37 @@ app.post('/api/groups/:id/education-forms', auth, async (req, res) => {
       text: announcementText, fileType: 'text',
       createdAt: announcement.rows[0].created_at,
       formId: inserted.rows[0].id, educationResponseStatus: null,
+      educationFormTitle: title, educationFormType: formType,
+      educationFormCreatorId: inserted.rows[0].created_by,
+      educationFormStatus: inserted.rows[0].status,
+      educationFormCreatedAt: inserted.rows[0].created_at,
     });
     logActivity(req.user.id, 'education_form_create', {
       groupId: req.params.id, formId: inserted.rows[0].id, formType,
     }, req.ip);
-    res.status(201).json(inserted.rows[0]);
+    const isRecipient = members.rows.some(row => row.user_id === req.user.id);
+    res.status(201).json({ ...inserted.rows[0], isCreator: true, isRecipient,
+      canRespond: isRecipient, canManage: true, canSend: true });
   } catch (e) {
     console.error('education form create:', e.message);
-    res.status(500).json({ error: 'יצירת הטופס נכשלה' });
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'יצירת הטופס נכשלה', code: e.code });
   }
 });
 
 app.get('/api/education-forms/:id', auth, async (req, res) => {
+  if (denyTeenEducation(req, res)) return;
   try {
     const pool = await getPool();
     const formResult = await pool.query(
-      `SELECT f.*, g.name AS group_name, CASE WHEN gm.status='member' THEN gm.role ELSE 'member' END AS my_role,
+      `SELECT f.*, g.name AS group_name,g.send_permission, CASE WHEN gm.status='member' THEN gm.role ELSE 'member' END AS my_role,
               gm.status AS membership_status,
               viewer.name AS current_user_name,
               mine.response_status AS my_response_status,
               mine.answers AS my_answers, mine.signer_name AS my_signer_name,
               mine.signature_data AS my_signature_data, mine.submitted_at AS my_submitted_at,
-              change_request.status AS my_change_request_status
+              change_request.status AS my_change_request_status,
+              EXISTS(SELECT 1 FROM education_form_recipients recipient
+                WHERE recipient.form_id=f.id AND recipient.user_id=$2) AS "isRecipient"
        FROM education_forms f JOIN groups g ON g.id=f.group_id
        JOIN group_members gm ON gm.group_id=f.group_id AND gm.user_id=$2 AND gm.status='member'
        JOIN users viewer ON viewer.id=$2
@@ -10076,39 +10223,56 @@ app.get('/api/education-forms/:id', auth, async (req, res) => {
          WHERE recipient.form_id=f.id AND recipient.user_id=$2))`, [req.params.id, req.user.id]);
     if (!formResult.rows.length) return res.status(404).json({ error: 'הטופס לא נמצא' });
     const form = formResult.rows[0];
+    const isAdmin = form.my_role === 'admin';
+    form.isCreator = form.created_by === req.user.id;
+    form.canRespond = form.isRecipient;
+    form.canManage = isAdmin || form.isCreator;
+    form.canSend = await educationFormPolicy.canSend(pool, form.group_id,
+      { role: form.my_role, send_permission: form.send_permission });
     let participants = null;
     let results = null;
-    if (form.my_role === 'admin') {
+    if (form.canManage) {
+      const totals = (await pool.query(`SELECT COUNT(*)::int AS expected_count,
+        COUNT(response.user_id)::int AS response_count,
+        COUNT(*) FILTER (WHERE membership.status='pending')::int AS pending_recipient_count
+        FROM education_form_recipients recipient
+        LEFT JOIN education_form_responses response ON response.form_id=recipient.form_id AND response.user_id=recipient.user_id
+        LEFT JOIN group_members membership ON membership.group_id=$2 AND membership.user_id=recipient.user_id
+        WHERE recipient.form_id=$1`, [form.id, form.group_id])).rows[0];
+      Object.assign(form, totals);
       const newMembers = await pool.query(
         `SELECT COUNT(*)::int AS count FROM group_members gm
-         WHERE gm.group_id=$1 AND gm.status IN ('member','pending') AND gm.user_id<>$2
+         WHERE gm.group_id=$1 AND gm.status IN ('member','pending')
            AND NOT EXISTS(SELECT 1 FROM education_form_recipients recipient
-             WHERE recipient.form_id=$3 AND recipient.user_id=gm.user_id)`,
-        [form.group_id, form.created_by, form.id]);
+             WHERE recipient.form_id=$2 AND recipient.user_id=gm.user_id)`,
+        [form.group_id, form.id]);
       form.new_member_count = newMembers.rows[0].count;
       form.revisions = (await pool.query(`SELECT id,created_at,snapshot->>'title' AS title,
         jsonb_array_length(responses) AS response_count FROM education_form_revisions
         WHERE form_id=$1 ORDER BY created_at DESC`, [form.id])).rows;
       participants = (await pool.query(
         `SELECT u.id,u.name,
-                r.response_status,r.submitted_at,r.signer_name,
+                r.response_status,
+                CASE WHEN $2 THEN NULL ELSE r.submitted_at END AS submitted_at,
+                CASE WHEN $2 THEN NULL ELSE r.signer_name END AS signer_name,
                 change_request.status AS change_request_status,
                 CASE WHEN $2 THEN NULL ELSE r.answers END AS answers,
                 (SELECT max(sent_at) FROM education_form_reminders rem
                  WHERE rem.form_id=$1 AND rem.recipient_id=u.id) AS last_reminded_at
          FROM education_form_recipients recipient JOIN users u ON u.id=recipient.user_id
+         LEFT JOIN group_members membership ON membership.group_id=$4 AND membership.user_id=u.id
          LEFT JOIN education_form_responses r ON r.form_id=$1 AND r.user_id=u.id
          LEFT JOIN education_response_change_requests change_request
            ON change_request.form_id=$1 AND change_request.user_id=u.id
-         WHERE recipient.form_id=$1
+         WHERE recipient.form_id=$1 AND ($3 OR membership.status='member')
          ORDER BY (r.response_status IS NULL) DESC,u.name`,
-        [form.id, form.anonymous])).rows;
+        [form.id, form.anonymous, isAdmin, form.group_id])).rows;
       if (form.form_type === 'survey') {
         results = (await pool.query(
           `SELECT answers FROM education_form_responses WHERE form_id=$1`, [form.id])).rows;
       }
     }
-    res.json({ form, participants, results });
+    res.json({ form, participants, results, isCreator: form.isCreator, canManage: form.canManage });
   } catch (e) {
     console.error('education form details:', e.message);
     res.status(500).json({ error: 'טעינת הטופס נכשלה' });
@@ -10116,6 +10280,7 @@ app.get('/api/education-forms/:id', auth, async (req, res) => {
 });
 
 app.post('/api/education-forms/:id/change-request', auth, async (req, res) => {
+  if (denyTeenEducation(req, res)) return;
   try {
     const pool = await getPool();
     const found = await pool.query(
@@ -10137,8 +10302,9 @@ app.post('/api/education-forms/:id/change-request', auth, async (req, res) => {
     if (!saved.rows.length)
       return res.status(409).json({ error: 'בקשת השינוי כבר ממתינה לאישור מנהל' });
     const admins = await pool.query(
-      `SELECT user_id FROM group_members WHERE group_id=$1 AND role='admin' AND status='member'`,
-      [form.group_id]);
+      `SELECT user_id FROM group_members WHERE group_id=$1 AND status='member'
+         AND (role='admin' OR user_id=(SELECT created_by FROM education_forms WHERE id=$2))`,
+      [form.group_id, form.id]);
     for (const admin of admins.rows) {
       if (admin.user_id !== req.user.id)
         sendPush(admin.user_id, `בקשת שינוי • ${form.group_name}`,
@@ -10159,16 +10325,17 @@ app.post('/api/education-forms/:id/change-request', auth, async (req, res) => {
 });
 
 app.post('/api/education-forms/:id/change-request/:userId/decision', auth, async (req, res) => {
+  if (denyTeenEducation(req, res)) return;
   const decision = String(req.body.decision || '');
   if (!['approved', 'rejected'].includes(decision))
     return res.status(400).json({ error: 'החלטת המנהל אינה תקינה' });
   try {
     const pool = await getPool();
     const found = await pool.query(
-      `SELECT f.id,f.group_id,f.title,f.status,g.name AS group_name
+      `SELECT f.id,f.group_id,f.title,f.status,g.name AS group_name,g.send_permission,gm.role
        FROM education_forms f JOIN groups g ON g.id=f.group_id
        JOIN group_members gm ON gm.group_id=f.group_id
-       WHERE f.id=$1 AND gm.user_id=$2 AND gm.role='admin' AND gm.status='member'`,
+       WHERE f.id=$1 AND gm.user_id=$2 AND (gm.role='admin' OR f.created_by=$2) AND gm.status='member'`,
       [req.params.id, req.user.id]);
     const form = found.rows[0];
     if (!form) return res.status(403).json({ error: 'אין הרשאת מנהל' });
@@ -10184,11 +10351,14 @@ app.post('/api/education-forms/:id/change-request/:userId/decision', auth, async
     if (decision === 'approved')
       await pool.query(`DELETE FROM education_form_responses WHERE form_id=$1 AND user_id=$2`,
         [form.id, req.params.userId]);
-    sendPush(req.params.userId, `בקשת שינוי • ${form.group_name}`,
-      decision === 'approved'
-        ? `בקשתך אושרה. ניתן לבחור מחדש: ${form.title}`
-        : `בקשתך לשינוי נדחתה: ${form.title}`,
-      { type: 'education_form', groupId: form.group_id, formId: form.id });
+    const recipientActive = await pool.query(`SELECT 1 FROM group_members
+      WHERE group_id=$1 AND user_id=$2 AND status='member'`, [form.group_id, req.params.userId]);
+    if (recipientActive.rows.length && await educationFormPolicy.canSend(pool, form.group_id, form))
+      sendPush(req.params.userId, `בקשת שינוי • ${form.group_name}`,
+        decision === 'approved'
+          ? `בקשתך אושרה. ניתן לבחור מחדש: ${form.title}`
+          : `בקשתך לשינוי נדחתה: ${form.title}`,
+        { type: 'education_form', groupId: form.group_id, formId: form.id });
     logActivity(req.user.id, 'education_response_change_decision', {
       groupId: form.group_id, formId: form.id, userId: req.params.userId, decision,
     }, req.ip);
@@ -10203,6 +10373,7 @@ app.post('/api/education-forms/:id/change-request/:userId/decision', auth, async
 });
 
 app.post('/api/education-forms/:id/respond', auth, async (req, res) => {
+  if (denyTeenEducation(req, res)) return;
   const responseStatus = String(req.body.status || '');
   if (!['approved', 'declined', 'completed'].includes(responseStatus))
     return res.status(400).json({ error: 'התשובה אינה תקינה' });
@@ -10213,10 +10384,9 @@ app.post('/api/education-forms/:id/respond', auth, async (req, res) => {
     const found = await client.query(
       `SELECT f.*,CASE WHEN gm.status='member' THEN gm.role ELSE 'member' END AS role FROM education_forms f
        JOIN group_members gm ON gm.group_id=f.group_id
+       JOIN education_form_recipients recipient ON recipient.form_id=f.id AND recipient.user_id=$2
        WHERE f.id=$1 AND gm.user_id=$2 AND gm.status='member'
-         AND ((gm.status='member' AND (gm.role='admin' OR f.created_by=$2)) OR EXISTS(
-           SELECT 1 FROM education_form_recipients recipient
-           WHERE recipient.form_id=f.id AND recipient.user_id=$2)) FOR SHARE OF f`,
+       FOR SHARE OF f`,
       [req.params.id, req.user.id]);
     const form = found.rows[0];
     if (!form) return res.status(404).json({ error: 'הטופס לא נמצא' });
@@ -10267,24 +10437,28 @@ app.post('/api/education-forms/:id/respond', auth, async (req, res) => {
 });
 
 app.post('/api/education-forms/:id/remind', auth, async (req, res) => {
+  if (denyTeenEducation(req, res)) return;
   try {
     const pool = await getPool();
     const formResult = await pool.query(
-      `SELECT f.*,g.name AS group_name FROM education_forms f JOIN groups g ON g.id=f.group_id
+      `SELECT f.*,g.name AS group_name,g.send_permission,gm.role FROM education_forms f JOIN groups g ON g.id=f.group_id
        JOIN group_members gm ON gm.group_id=f.group_id
-       WHERE f.id=$1 AND gm.user_id=$2 AND gm.role='admin' AND gm.status='member'`,
+       WHERE f.id=$1 AND gm.user_id=$2 AND (gm.role='admin' OR f.created_by=$2) AND gm.status='member'`,
       [req.params.id, req.user.id]);
     const form = formResult.rows[0];
     if (!form) return res.status(403).json({ error: 'אין הרשאה לשלוח תזכורת' });
     if (form.status !== 'open') return res.status(409).json({ error: 'הטופס סגור' });
+    if (!await educationFormPolicy.canSend(pool, form.group_id, form))
+      return res.status(403).json({ error: 'אין הרשאה לשלוח תוכן לקבוצה' });
+    await educationFormPolicy.validateContent(req, pool, form.group_id, form, { existingFileUrl: form.file_url });
     const requested = Array.isArray(req.body.userIds) ? req.body.userIds : [];
     const recipients = await pool.query(
       `SELECT gm.user_id FROM education_form_recipients recipient
        JOIN group_members gm ON gm.user_id=recipient.user_id AND gm.group_id=$1 AND gm.status='member'
        LEFT JOIN education_form_responses r ON r.form_id=$2 AND r.user_id=gm.user_id
-       WHERE recipient.form_id=$2 AND gm.user_id<>$3
-         AND r.user_id IS NULL AND (cardinality($4::uuid[])=0 OR gm.user_id=ANY($4::uuid[]))`,
-      [form.group_id, form.id, form.created_by, requested]);
+       WHERE recipient.form_id=$2
+         AND r.user_id IS NULL AND (cardinality($3::uuid[])=0 OR gm.user_id=ANY($3::uuid[]))`,
+      [form.group_id, form.id, requested]);
     for (const row of recipients.rows) {
       await pool.query(
         `INSERT INTO education_form_reminders(form_id,sent_by,recipient_id) VALUES($1,$2,$3)`,
@@ -10300,22 +10474,26 @@ app.post('/api/education-forms/:id/remind', auth, async (req, res) => {
     res.json({ ok: true, sent: recipients.rowCount });
   } catch (e) {
     console.error('education form remind:', e.message);
-    res.status(500).json({ error: 'שליחת התזכורת נכשלה' });
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'שליחת התזכורת נכשלה', code: e.code });
   }
 });
 
-app.post('/api/education-forms/:id/assign-new-members', auth, async (req, res) => {
+app.post('/api/education-forms/:id/assign-new-members', auth, messageRateLimit, async (req, res) => {
+  if (denyTeenEducation(req, res)) return;
   try {
     const pool = await getPool();
     const formResult = await pool.query(
-      `SELECT f.*,g.name AS group_name FROM education_forms f JOIN groups g ON g.id=f.group_id
+      `SELECT f.*,g.name AS group_name,g.send_permission,admin_member.role FROM education_forms f JOIN groups g ON g.id=f.group_id
        JOIN group_members admin_member ON admin_member.group_id=f.group_id
        WHERE f.id=$1 AND admin_member.user_id=$2
-         AND admin_member.role='admin' AND admin_member.status='member'`,
+         AND (admin_member.role='admin' OR f.created_by=$2) AND admin_member.status='member'`,
       [req.params.id, req.user.id]);
     const form = formResult.rows[0];
     if (!form) return res.status(403).json({ error: 'אין הרשאה לשלוח לחברים חדשים' });
     if (form.status !== 'open') return res.status(409).json({ error: 'הטופס סגור' });
+    if (!await educationFormPolicy.canSend(pool, form.group_id, form))
+      return res.status(403).json({ error: 'אין הרשאה לשלוח תוכן לקבוצה' });
+    await educationFormPolicy.validateContent(req, pool, form.group_id, form, { existingFileUrl: form.file_url });
     if (req.body.recipientIds !== undefined && !Array.isArray(req.body.recipientIds))
       return res.status(400).json({ error: 'רשימת הנמענים אינה תקינה' });
     const selectedIds = Array.isArray(req.body.recipientIds) ? req.body.recipientIds : null;
@@ -10323,11 +10501,11 @@ app.post('/api/education-forms/:id/assign-new-members', auth, async (req, res) =
       return res.status(400).json({ error: 'רשימת הנמענים אינה תקינה' });
     const newMembers = await pool.query(
       `SELECT gm.user_id,gm.status FROM group_members gm
-       WHERE gm.group_id=$1 AND gm.status IN ('member','pending') AND gm.user_id<>$2
-         AND ($4::uuid[] IS NULL OR gm.user_id=ANY($4::uuid[]))
+       WHERE gm.group_id=$1 AND gm.status IN ('member','pending')
+         AND ($3::uuid[] IS NULL OR gm.user_id=ANY($3::uuid[]))
          AND NOT EXISTS(SELECT 1 FROM education_form_recipients recipient
-           WHERE recipient.form_id=$3 AND recipient.user_id=gm.user_id)`,
-      [form.group_id, form.created_by, form.id, selectedIds]);
+           WHERE recipient.form_id=$2 AND recipient.user_id=gm.user_id)`,
+      [form.group_id, form.id, selectedIds]);
     if (newMembers.rows.length) {
       const assigned = await pool.query(
         `INSERT INTO education_form_recipients(form_id,user_id,notified_at)
@@ -10339,7 +10517,7 @@ app.post('/api/education-forms/:id/assign-new-members', auth, async (req, res) =
       if (!assigned.rows.length) return res.json({ ok: true, sent: 0 });
       const kind = form.form_type === 'survey' ? 'סקר' : form.form_type === 'signature' ? 'מסמך לחתימה' : 'אישור';
       for (const row of newMembers.rows.filter(row => activeIds.has(row.user_id))) {
-        sendPush(row.user_id, form.group_name, `${kind} שנשלח לפני הצטרפותך: ${form.title}`, {
+        sendPush(row.user_id, form.group_name, `${kind} נוסף עבורך: ${form.title}`, {
           type: 'education_form', groupId: form.group_id, formId: form.id,
         });
       }
@@ -10357,6 +10535,9 @@ app.post('/api/education-forms/:id/assign-new-members', auth, async (req, res) =
         text: announcementText, fileType: 'text',
         createdAt: announcement.rows[0].created_at,
         formId: form.id, educationResponseStatus: null,
+        educationFormTitle: form.title, educationFormType: form.form_type,
+        educationFormCreatorId: form.created_by,
+        educationFormStatus: form.status, educationFormCreatedAt: form.created_at,
       });
     }
     logActivity(req.user.id, 'education_form_assign_new_members', {
@@ -10365,21 +10546,25 @@ app.post('/api/education-forms/:id/assign-new-members', auth, async (req, res) =
     res.json({ ok: true, sent: newMembers.rowCount });
   } catch (e) {
     console.error('education form assign new members:', e.message);
-    res.status(500).json({ error: 'השליחה לחברים החדשים נכשלה' });
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'השליחה לחברים החדשים נכשלה', code: e.code });
   }
 });
 
-app.post('/api/education-forms/:id/republish', auth, async (req, res) => {
+app.post('/api/education-forms/:id/republish', auth, messageRateLimit, async (req, res) => {
+  if (denyTeenEducation(req, res)) return;
   try {
     const pool = await getPool();
     const found = await pool.query(
-      `SELECT f.*,g.name AS group_name FROM education_forms f JOIN groups g ON g.id=f.group_id
+      `SELECT f.*,g.name AS group_name,g.send_permission,gm.role FROM education_forms f JOIN groups g ON g.id=f.group_id
        JOIN group_members gm ON gm.group_id=f.group_id
-       WHERE f.id=$1 AND gm.user_id=$2 AND gm.role='admin' AND gm.status='member'`,
+       WHERE f.id=$1 AND gm.user_id=$2 AND (gm.role='admin' OR f.created_by=$2) AND gm.status='member'`,
       [req.params.id, req.user.id]);
     const form = found.rows[0];
     if (!form) return res.status(403).json({ error: 'אין הרשאה לפרסם את הטופס' });
     if (form.status !== 'open') return res.status(409).json({ error: 'הטופס סגור' });
+    if (!await educationFormPolicy.canSend(pool, form.group_id, form))
+      return res.status(403).json({ error: 'אין הרשאה לשלוח תוכן לקבוצה' });
+    await educationFormPolicy.validateContent(req, pool, form.group_id, form, { existingFileUrl: form.file_url });
     const kind = form.form_type === 'survey' ? 'סקר' : form.form_type === 'signature' ? 'מסמך לחתימה' : 'אישור';
     const text = `📋 ${kind}: ${form.title}`;
     const message = await pool.query(
@@ -10391,6 +10576,9 @@ app.post('/api/education-forms/:id/republish', auth, async (req, res) => {
       fromUserId: req.user.id, fromName: req.user.name, text,
       fileType: 'text', createdAt: message.rows[0].created_at,
       formId: form.id, educationResponseStatus: null,
+      educationFormTitle: form.title, educationFormType: form.form_type,
+      educationFormCreatorId: form.created_by,
+      educationFormStatus: form.status, educationFormCreatedAt: form.created_at,
     });
     const pending = await pool.query(
       `SELECT recipient.user_id FROM education_form_recipients recipient
@@ -10411,11 +10599,12 @@ app.post('/api/education-forms/:id/republish', auth, async (req, res) => {
     res.json({ ok: true, notified: pending.rowCount });
   } catch (e) {
     console.error('education form republish:', e.message);
-    res.status(500).json({ error: 'פרסום הטופס בקבוצה נכשל' });
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'פרסום הטופס בקבוצה נכשל', code: e.code });
   }
 });
 
 app.put('/api/education-forms/:id/status', auth, async (req, res) => {
+  if (denyTeenEducation(req, res)) return;
   const status = req.body.status;
   if (!['open', 'closed'].includes(status)) return res.status(400).json({ error: 'מצב לא תקין' });
   try {
@@ -10423,7 +10612,7 @@ app.put('/api/education-forms/:id/status', auth, async (req, res) => {
     const updated = await pool.query(
       `UPDATE education_forms f SET status=$1 WHERE f.id=$2 AND EXISTS(
        SELECT 1 FROM group_members gm WHERE gm.group_id=f.group_id
-       AND gm.user_id=$3 AND gm.role='admin' AND gm.status='member') RETURNING id,status,group_id`,
+       AND gm.user_id=$3 AND (gm.role='admin' OR f.created_by=$3) AND gm.status='member') RETURNING id,status,group_id`,
       [status, req.params.id, req.user.id]);
     if (!updated.rows.length) return res.status(403).json({ error: 'אין הרשאה' });
     io.to(`group:${updated.rows[0].group_id}`).emit('education:updated', {
@@ -10677,6 +10866,13 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
       const missedRes = await pool.query(
         `SELECT m.id, m.sender_id, m.type, m.body, m.file_url, m.file_name,
                 m.education_form_id, education_response.response_status AS education_response_status,
+                education_form.title AS education_form_title,
+                education_form.form_type AS education_form_type,
+                education_form.created_by AS education_form_creator_id,
+                education_form.status AS education_form_status,
+                education_form.created_at AS education_form_created_at,
+                EXISTS(SELECT 1 FROM education_form_recipients recipient
+                  WHERE recipient.form_id=m.education_form_id AND recipient.user_id=$3) AS education_is_recipient,
                 m.reply_to_id, m.created_at,
                 u.name AS sender_name,
                 r.body AS reply_body,
@@ -10687,11 +10883,14 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
          LEFT JOIN stored_files sf ON sf.public_url=m.file_url
          LEFT JOIN education_form_responses education_response
            ON education_response.form_id=m.education_form_id AND education_response.user_id=$3
+         LEFT JOIN education_forms education_form ON education_form.id=m.education_form_id
          WHERE m.group_id = $1 AND m.deleted_for_everyone = FALSE
            AND m.created_at >= $2
          ORDER BY m.created_at ASC`, [req.params.id, new Date(pendingSince), req.user.id]);
       missedMessages = missedRes.rows.filter(row => contentAllowedByFilter(
         personalFilter, row.type, row.image_classification));
+      missedMessages = await projectFilteredHistory(pool, req.user.id, missedMessages,
+        { groupId: req.params.id });
       await retainVisibleReceivedMessages(pool, req.user.id, missedMessages);
       missedMessages = await personalizeReceivedMessages(pool, req.user.id, missedMessages);
     }
@@ -13432,13 +13631,17 @@ app.get('/api/test-storage', adminAuth, async (req, res) => {
 app.get('/api/version', async (req, res) => {
   try { const pool = await getPool(); await pool.query('SELECT 1'); } catch (_) {}
   let version = '1.2.26';
+  let releaseInfo = {};
   try {
-    const info = JSON.parse(await fs.readFile(
+    releaseInfo = JSON.parse(await fs.readFile(
       path.join(__dirname, '..', 'version.json'), 'utf8'));
-    if (info.version) version = String(info.version);
+    if (releaseInfo.version) version = String(releaseInfo.version);
   } catch (_) {}
+  res.set('Cache-Control', 'no-store');
   res.json({
     version,
+    build_number: releaseInfo.build_number || null,
+    web_build_id: releaseInfo.web_build_id || null,
     apkUrl: `https://betshuva.com/betshuva-app/betshuva-${version}.apk`,
   });
 });
@@ -14800,86 +15003,42 @@ async function runAutomaticBackupWorker(workerIndex) {
 runAutomaticBackupWorker.running = false;
 
 async function runAutomaticRestoreQueue() {
-  if (runAutomaticRestoreQueue.running) return;
-  runAutomaticRestoreQueue.running = true;
-  try {
-    const pool = await getPool();
-    const result = await pool.query(
-      `SELECT mbi.id,mbi.user_id,mbi.stored_file_id,mbi.remote_file_id,
-              mbi.plaintext_sha256,mbi.encrypted_sha256,mbi.encryption_metadata,
-              sf.file_size,s.encrypted_data_key,c.encrypted_refresh_token
-       FROM media_backup_items mbi
-       JOIN stored_files sf ON sf.id=mbi.stored_file_id
-       JOIN user_backup_settings s ON s.user_id=mbi.user_id
-         AND (s.enabled=TRUE OR mbi.encryption_metadata->>'guideRequested'='true' OR sf.storage_tier='personal')
-       JOIN cloud_backup_accounts c ON c.user_id=mbi.user_id AND c.status='connected'
-       WHERE mbi.status='verified' AND mbi.restore_verified_at IS NULL
-         AND mbi.encryption_metadata->>'keySource'='server_vault'
-       ORDER BY mbi.verified_at ASC LIMIT 1`);
-    if (!result.rows.length) return;
-    const row = result.rows[0];
-    const metadata = row.encryption_metadata;
-    const refreshToken = personalDrive.decryptRefreshToken(
-      row.encrypted_refresh_token, row.user_id);
-    const [encrypted, manifestBytes] = await Promise.all([
-      personalDrive.downloadAppDataFile(refreshToken, row.remote_file_id,
-        Number(row.file_size) + 1024),
-      personalDrive.downloadAppDataFile(refreshToken, metadata.manifestRemoteId, 1024 * 1024),
-    ]);
-    const manifest = JSON.parse(manifestBytes.toString('utf8'));
-    const encryptedHash = crypto.createHash('sha256').update(encrypted).digest('hex');
-    if (encryptedHash !== row.encrypted_sha256 ||
-        manifest.encryptedSha256 !== row.encrypted_sha256 ||
-        manifest.plaintextSha256 !== row.plaintext_sha256)
-      throw new Error('Automatic restore manifest or checksum mismatch');
-    const key = unwrapVaultKey(row.encrypted_data_key, row.user_id);
-    const restored = decryptBackupBuffer({ version: 1,
-      algorithm: manifest.encryption.algorithm, nonce: manifest.encryption.nonce,
-      tag: manifest.encryption.tag, ciphertext: encrypted }, key,
-    manifest.encryption.associatedData);
-    const restoredHash = crypto.createHash('sha256').update(restored).digest('hex');
-    if (restoredHash !== row.plaintext_sha256)
-      throw new Error('Automatic restored plaintext checksum mismatch');
-    await pool.query(
-      `WITH verified AS (
-         UPDATE media_backup_items SET restore_verified_at=now(),updated_at=now()
-         WHERE id=$1 RETURNING stored_file_id
-       )
-       UPDATE stored_files sf SET release_scheduled_at=COALESCE(sf.release_scheduled_at,now())
-       FROM verified WHERE sf.id=verified.stored_file_id`, [row.id]);
-    logActivity(row.user_id, 'automatic_restore_verification',
-      { storedFileId: row.stored_file_id, bytes: restored.length }, null);
-    // A successful cloud round-trip is the release gate; no additional mode
-    // or grace timer is required.
-    await runSafeReleaseQueue();
-  } catch (e) {
-    console.error('automatic restore queue:', e.message);
-  } finally {
-    runAutomaticRestoreQueue.running = false;
-  }
+  return automaticRestoreQueue();
 }
-runAutomaticRestoreQueue.running = false;
+const withDriveVerification = createVerificationLock();
+const automaticRestoreQueue = createAutomaticRestoreQueue({
+  getPool,
+  withVerification: withDriveVerification,
+  releaseVerified: () => runSafeReleaseQueue(),
+  onVerified: ({ storedFileId, userId, bytes }) =>
+    logActivity(userId, 'automatic_restore_verification', { storedFileId, bytes }, null),
+  onError: (_error, context) => console.error('automatic restore queue:', context.code),
+});
 
-async function runSafeReleaseQueue() {
-  if (runSafeReleaseQueue.running) return;
-  runSafeReleaseQueue.running = true;
-  try {
-    const pool = await getPool();
-    const result = await releaseLocalMediaBatch({ pool, uploadRoot: UPLOAD_ROOT,
-      onReleased: (row, bytes) => logActivity(row.user_id, 'safe_local_media_release',
-        { storedFileId: row.id, bytes }, null),
-      onError: (id, error) => console.error('safe release retained:', id, error.message),
-    });
-    // Drain existing backups without waiting ten seconds between full batches.
-    if (result.examined === 10 && result.released + result.failed > 0)
-      setTimeout(runSafeReleaseQueue, 200);
-  } catch (e) {
-    console.error('safe release queue:', e.message);
-  } finally {
-    runSafeReleaseQueue.running = false;
-  }
+function runSafeReleaseQueue() {
+  if (runSafeReleaseQueue.promise) return runSafeReleaseQueue.promise;
+  runSafeReleaseQueue.promise = (async () => {
+    try {
+      const result = await withDriveVerification(async () => {
+        const pool = await getPool();
+        return releaseLocalMediaBatch({ pool, uploadRoot: UPLOAD_ROOT,
+          onReleased: (row, bytes) => logActivity(row.user_id, 'safe_local_media_release',
+            { storedFileId: row.id, bytes }, null),
+          onError: (id, error) => console.error('safe release retained:', id, error.message),
+        });
+      });
+      // Drain existing backups without waiting ten seconds between full batches.
+      if (result.examined === 10 && result.released + result.failed > 0)
+        setTimeout(runSafeReleaseQueue, 200);
+    } catch (e) {
+      console.error('safe release queue:', e.message);
+    } finally {
+      runSafeReleaseQueue.promise = null;
+    }
+  })();
+  return runSafeReleaseQueue.promise;
 }
-runSafeReleaseQueue.running = false;
+runSafeReleaseQueue.promise = null;
 
 async function migrateMessageBodiesAtRest() {
   const pool = await getPool();

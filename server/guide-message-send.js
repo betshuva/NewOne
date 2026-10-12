@@ -1,11 +1,13 @@
 'use strict';
 
 const { phoneSelect } = require('./contact-phone-privacy');
+const { createHash } = require('node:crypto');
+const { UnicodeEmojiModerationError } = require('./unicode-emoji-moderation');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function registerGuideMessageSend(app, { auth, rateLimit, getPool, systemUserId,
-  safeInformationUserId, scanBotId, sendMessage, sendGroupMessage }) {
+  safeInformationUserId, scanBotId, sendMessage, sendGroupMessage, preflight }) {
   app.get('/api/guide-message-recipients', auth, async (req, res) => {
     try {
       const pool = await getPool();
@@ -28,12 +30,16 @@ function registerGuideMessageSend(app, { auth, rateLimit, getPool, systemUserId,
       return res.json(result.rows);
     } catch (_) { return res.status(500).json({ error: 'לא ניתן לטעון אנשי קשר' }); }
   });
-  async function ownedDraft(pool, userId, sourceId) {
-    if (!UUID.test(sourceId || '')) return false;
+  async function draftBody(pool, userId, sourceId, lock = false) {
+    if (!UUID.test(sourceId || '')) return null;
     const result = await pool.query(`SELECT body FROM messages
       WHERE id=$1 AND sender_id=$2 AND recipient_id=$3
-        AND deleted_for_everyone=FALSE`, [sourceId, systemUserId, userId]);
-    return /betshuva:\/\/message-draft\/[A-Za-z0-9_-]+/.test(result.rows[0]?.body || '');
+        AND deleted_for_everyone=FALSE${lock ? ' FOR SHARE' : ''}`, [sourceId, systemUserId, userId]);
+    const body = result.rows[0]?.body;
+    return /betshuva:\/\/message-draft\/[A-Za-z0-9_-]+/.test(body || '') ? body : null;
+  }
+  async function ownedDraft(pool, userId, sourceId) {
+    return (await draftBody(pool, userId, sourceId)) !== null;
   }
   app.get('/api/guide-message-drafts/:id', auth, async (req, res) => {
     try {
@@ -53,14 +59,37 @@ function registerGuideMessageSend(app, { auth, rateLimit, getPool, systemUserId,
       return res.status(400).json({ error: 'יש לבחור נמען ולאשר את תוכן ההודעה' });
     if (groupId && (req.user.isTeen || !sendGroupMessage))
       return res.status(403).json({ error: 'שליחה לקבוצה אינה זמינה בחשבון זה' });
-    const pool = await getPool();
-    const client = await pool.connect();
+    const draftId = req.params.id;
+    const messageBody = groupId ? { text: text.trim() } : { toUserId, text: text.trim() };
+    let client;
     try {
+      const pool = await getPool();
+      let preparedDraftHash;
+      if (preflight) {
+        const body = await draftBody(pool, req.user.id, draftId);
+        if (body === null) return res.status(404).json({ error: 'הטיוטה לא נמצאה' });
+        const saved = await pool.query(`SELECT result FROM guide_message_sends
+          WHERE source_message_id=$1 AND user_id=$2`, [draftId, req.user.id]);
+        if (saved.rows.length) return res.json(saved.rows[0].result);
+        preparedDraftHash = createHash('sha256').update(body).digest('hex');
+        req.body = messageBody;
+        const draftParams = req.params;
+        if (groupId) req.params = { ...draftParams, id: groupId };
+        try { await preflight(req); }
+        finally { req.params = draftParams; }
+      }
+      client = await pool.connect();
       await client.query('BEGIN');
       await client.query("SET LOCAL statement_timeout='30s'");
-      if (!await ownedDraft(client, req.user.id, req.params.id)) {
+      // Hold the draft row through commit so edits cannot race its recheck.
+      const currentDraft = await draftBody(client, req.user.id, draftId, Boolean(preflight));
+      if (currentDraft === null) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'הטיוטה לא נמצאה' });
+      }
+      if (preflight && createHash('sha256').update(currentDraft).digest('hex') !== preparedDraftHash) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'הטיוטה השתנתה. יש לפתוח אותה ולאשר שוב' });
       }
       // The transaction serializes confirmations across tabs and server workers.
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [req.params.id]);
@@ -85,8 +114,7 @@ function registerGuideMessageSend(app, { auth, rateLimit, getPool, systemUserId,
       let result;
       const capture = { status(code) { status = code; return this; },
         json(value) { result = value; return this; } };
-      req.body = groupId ? { text: text.trim() } : { toUserId, text: text.trim() };
-      const draftId = req.params.id;
+      req.body = messageBody;
       req.messagePool = client;
       req.messageEffects = [];
       if (groupId) {
@@ -106,10 +134,12 @@ function registerGuideMessageSend(app, { auth, rateLimit, getPool, systemUserId,
       }
       return res.json(result);
     } catch (error) {
-      await client.query('ROLLBACK').catch(() => {});
+      if (client) await client.query('ROLLBACK').catch(() => {});
+      if (error instanceof UnicodeEmojiModerationError)
+        return res.status(error.status).json({ error: error.message, code: error.code });
       console.error('guide message send:', error.message);
       return res.status(500).json({ error: 'לא ניתן לשלוח כעת. אפשר לנסות שוב בבטחה.' });
-    } finally { client.release(); }
+    } finally { client?.release(); }
   });
 }
 

@@ -74,8 +74,34 @@ function imageAllowedByFilter(filter, classification) {
   return filter[category] === true;
 }
 
+// A caption adds visual categories; it never replaces the attached file's scan.
+function combineMessageClassifications(fileClassification, emojiClassification, fileType = null) {
+  if (emojiClassification?.inlineEmoji !== true) return fileClassification || null;
+  if (!fileClassification && ['image', 'video'].includes(fileType))
+    fileClassification = { category: 'people', uncertain: true };
+  const categories = value => {
+    const detected = Array.isArray(value?.detectedCategories) && value.detectedCategories.length
+      ? value.detectedCategories : value?.category ? [value.category] : [];
+    // A known caption category cannot resolve an uncertain or unspecified
+    // person in the file's independent scan (or the other way around).
+    const people = ['men', 'women', 'children'];
+    return value?.uncertain === true ||
+      (detected.includes('people') && !detected.some(category => people.includes(category)))
+      ? [...detected, ...people] : detected;
+  };
+  return { ...(fileClassification || emojiClassification),
+    detectedCategories: [...new Set([...categories(fileClassification), ...categories(emojiClassification)])],
+    uncertain: fileClassification?.uncertain === true || emojiClassification.uncertain === true,
+    inlineEmoji: true,
+    ...Object.fromEntries(['artworkVersion', 'moderationVersion', 'artworkHash']
+      .filter(key => emojiClassification[key] !== undefined)
+      .map(key => [key, emojiClassification[key]])) };
+}
+
 function contentAllowedByFilter(filter, type, classification) {
   const normalized = normalizeContentFilter(filter);
+  if (classification?.inlineEmoji === true && !imageAllowedByFilter(normalized, classification))
+    return false;
   if (type === 'text' || type === 'sticker' || type === 'audio')
     return normalized.text;
   if (type === 'document')
@@ -94,6 +120,7 @@ module.exports = {
   UNFILTERED_ASSISTANT_IDS,
   isUnfilteredAssistantConversation,
   contentAllowedByFilter,
+  combineMessageClassifications,
   imageAllowedByFilter,
   normalizeContentFilter,
   resolveScopedContentFilter,

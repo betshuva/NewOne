@@ -1,6 +1,7 @@
 'use strict';
 
 const sharp = require('sharp');
+const { potentialAnimationFormat } = require('./image-animation-policy');
 
 function bitsToHex(bits) {
   let value = '';
@@ -23,6 +24,9 @@ function hammingHex(left, right) {
 }
 
 async function createVisualFingerprint(buffer) {
+  // Some decoders report only the first APNG frame as a static PNG. Byte-level
+  // animation detection must run before accepting a static visual fingerprint.
+  if (potentialAnimationFormat(buffer)) return null;
   const metadata = await sharp(buffer, { animated: true }).metadata();
   if ((metadata.pages || 1) > 1 || !metadata.width || !metadata.height)
     return null;

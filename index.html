@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="he">
 <head>
   <!--
     If you are serving your web app in a path other than the root, change the
@@ -17,14 +17,16 @@
   <base href="/betshuva-app/">
 
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="בתשובה — שיחות, קבוצות ומודעות לקהילה, עם הגדרות סינון אישיות.">
+  <link rel="canonical" href="https://betshuva.com/betshuva-app/home.html">
   <meta name="google-signin-client_id" content="862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com">
 
   <!-- iOS meta tags & icons -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="flutter_app">
+  <meta name="apple-mobile-web-app-title" content="בתשובה">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
@@ -32,8 +34,30 @@
 
   <title>בתשובה</title>
   <link rel="manifest" href="manifest.json">
+  <style>
+    #betshuva-launch-shell{position:fixed;inset:0;z-index:100000;background:#f2f7fb;color:#0d2137;display:grid;place-items:center;padding:24px;font-family:Arial,sans-serif;text-align:center}
+    #betshuva-launch-shell[hidden]{display:none}
+    .launch-card{max-width:420px;width:100%;padding:30px 24px;background:white;border-radius:24px;box-shadow:0 12px 40px #1b6ca81a}
+    .launch-card img{width:66px;height:66px;border-radius:17px}
+    .launch-card h1{color:#1b6ca8;margin:16px 0 8px;font-size:30px}
+    .launch-card p{line-height:1.6}
+    .launch-card a{color:#1b6ca8;display:inline-block;padding:10px}
+    #betshuva-launch-retry{background:#1b6ca8;color:white;border:0;border-radius:12px;padding:13px 26px;font:inherit;cursor:pointer}
+    #betshuva-launch-retry[hidden]{display:none}
+    .launch-card :focus-visible{outline:3px solid #1b6ca8;outline-offset:4px}
+  </style>
 </head>
 <body>
+  <main id="betshuva-launch-shell" dir="rtl">
+    <div class="launch-card">
+      <img src="icons/Icon-192.png" alt="">
+      <h1>בתשובה</h1>
+      <p id="betshuva-launch-status" role="status" aria-live="polite">פותחים את בתשובה…</p>
+      <button id="betshuva-launch-retry" type="button" hidden>נסה שוב</button>
+      <div><a href="home.html">על בתשובה</a></div>
+      <noscript><p>האפליקציה דורשת JavaScript. אפשר לקרוא על השירות בדף ההיכרות.</p></noscript>
+    </div>
+  </main>
   <script>
     window.betshuvaCopyImage = async (imageUrl) => {
       if (!navigator.clipboard?.write || !window.ClipboardItem) {
@@ -92,12 +116,9 @@
             .filter(key => !key.toLowerCase().includes('firebase'))
             .map(key => caches.delete(key)));
       }
-    })();
+    })().catch(() => {});
   </script>
-  <script type="module">
-    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-    import { getMessaging, getToken } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js';
-
+  <script>
     const firebaseConfig = {
       apiKey: 'AIzaSyBCw4OzUPjquuw_kB1bFXqzOjZ-zPKrAP8',
       authDomain: 'betshuva-c74a3.firebaseapp.com',
@@ -106,9 +127,17 @@
       messagingSenderId: '862738339788',
       appId: '1:862738339788:web:36671c37704a2520f4af69'
     };
-    const firebaseApp = initializeApp(firebaseConfig, 'betshuva-web-push');
-    const messaging = getMessaging(firebaseApp);
+    let pushModules;
     window.betshuvaGetWebPushToken = async () => {
+      pushModules ??= Promise.all([
+        import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js'),
+        import('https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js')
+      ]).then(([appSdk, messagingSdk]) => {
+        const firebaseApp = appSdk.getApps().find(app => app.name === 'betshuva-web-push') ||
+            appSdk.initializeApp(firebaseConfig, 'betshuva-web-push');
+        return { messaging: messagingSdk.getMessaging(firebaseApp), getToken: messagingSdk.getToken };
+      }).catch(error => { pushModules = null; throw error; });
+      const { messaging, getToken } = await pushModules;
       const registration = await navigator.serviceWorker.register(
         '/betshuva-app/firebase-messaging-sw.js',
         { scope: '/betshuva-app/firebase-cloud-messaging-push-scope/' }
@@ -121,11 +150,38 @@
     };
   </script>
   <script>
-    window.betshuvaWebReady.finally(() => {
-      const bootstrap = document.createElement('script');
-      bootstrap.src = 'flutter_bootstrap.js?v=966ba6407734e488';
-      document.body.appendChild(bootstrap);
-    });
+    const launchShell = document.getElementById('betshuva-launch-shell');
+    const launchStatus = document.getElementById('betshuva-launch-status');
+    const retryButton = document.getElementById('betshuva-launch-retry');
+    const showLaunchError = () => {
+      launchStatus.textContent = 'לא ניתן לפתוח את בתשובה כרגע. אפשר לנסות שוב.';
+      retryButton.hidden = false;
+    };
+    retryButton.addEventListener('click', () => window.location.reload());
+    const entryScript = document.createElement('script');
+    entryScript.src = 'entry-route.js?v=20261012222549';
+    entryScript.onerror = showLaunchError;
+    entryScript.onload = () => {
+      let storedToken;
+      try { storedToken = window.localStorage.getItem('flutter.token'); } catch (_) {}
+      const standalone = window.matchMedia?.('(display-mode: standalone)').matches ||
+          window.navigator.standalone === true;
+      const route = window.betshuvaEntryRoute.resolveEntryRoute({
+        href: window.location.href, baseHref: document.baseURI, storedToken, standalone
+      });
+      if (!route.bootApp) { window.location.replace(route.url); return; }
+      if (route.url !== window.location.href) window.history.replaceState(null, '', route.url);
+      const loader = window.betshuvaEntryRoute.createAppLoader({
+        window, document, ready: window.betshuvaWebReady,
+        bootstrapSrc: new URL('flutter_bootstrap.js?v=20261012222549', document.baseURI).href,
+        onReady: () => { launchShell.hidden = true; },
+        onError: showLaunchError
+      });
+      window.betshuvaReportAppLoadFailure = loader.reportFailure;
+      window.betshuvaStartApp = loader.start;
+      loader.start().catch(() => {});
+    };
+    document.body.appendChild(entryScript);
   </script>
 </body>
 </html>

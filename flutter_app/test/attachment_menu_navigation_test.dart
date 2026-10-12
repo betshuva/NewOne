@@ -152,7 +152,7 @@ void main() {
 
   for (final isAdmin in [false, true]) {
     testWidgets(
-        'compact group menu separates form actions for admins ($isAdmin)',
+        'sending group members can open each separate form action (admin: $isAdmin)',
         (tester) async {
       SharedPreferences.setMockInitialValues({});
       final group = <String, dynamic>{
@@ -184,57 +184,55 @@ void main() {
             // Chrome tests use a wider fallback font instead of NotoSansHebrew.
             lessThanOrEqualTo(kIsWeb ? 340 : 300));
         final entry = find.text('אישור, חתימה או סקר');
-        expect(entry, isAdmin ? findsOneWidget : findsNothing);
-        if (isAdmin) {
-          await tester.tap(entry);
-          await tester.pumpAndSettle();
-          expect(find.byType(CreateEducationFormScreen), findsNothing);
-          for (final label in ['אישור', 'חתימה', 'סקר']) {
-            expect(find.text(label), findsOneWidget);
-          }
-          // Returning from the submenu must preserve the root attachment menu.
+        expect(entry, findsOneWidget);
+        await tester.tap(entry);
+        await tester.pumpAndSettle();
+        expect(find.byType(CreateEducationFormScreen), findsNothing);
+        for (final label in ['אישור', 'חתימה', 'סקר']) {
+          expect(find.text(label), findsOneWidget);
+        }
+        // Returning from the submenu must preserve the root attachment menu.
+        await tester.tap(find.text('אישור, חתימה או סקר'));
+        await tester.pumpAndSettle();
+        expect(find.text('העלאת קבצים'), findsOneWidget);
+        for (final choice in [
+          ('אישור', 'approval', 'יצירת אישור'),
+          ('חתימה', 'signature', 'יצירת בקשת חתימה'),
+          ('סקר', 'survey', 'יצירת סקר'),
+        ]) {
           await tester.tap(find.text('אישור, חתימה או סקר'));
           await tester.pumpAndSettle();
-          expect(find.text('העלאת קבצים'), findsOneWidget);
-          for (final choice in [
-            ('אישור', 'approval', 'יצירת אישור'),
-            ('חתימה', 'signature', 'יצירת בקשת חתימה'),
-            ('סקר', 'survey', 'יצירת סקר'),
-          ]) {
-            await tester.tap(find.text('אישור, חתימה או סקר'));
+          await tester.tap(find.text(choice.$1));
+          await tester.pumpAndSettle();
+          expect(
+              find.byKey(const ValueKey('chat-attachment-menu')), findsNothing);
+          final creator = find.byType(CreateEducationFormScreen);
+          expect(creator, findsOneWidget);
+          final screen = tester.widget<CreateEducationFormScreen>(creator);
+          expect(screen.initialType, choice.$2);
+          expect(screen.lockType, isTrue);
+          expect(find.text(choice.$3), findsOneWidget);
+          expect(find.byType(SegmentedButton<String>), findsNothing);
+          expect(find.text('צירוף מסמך לחתימה *'),
+              choice.$2 == 'signature' ? findsOneWidget : findsNothing);
+          if (choice.$2 == 'survey') {
+            await tester.scrollUntilVisible(find.text('סקר אנונימי'), 150,
+                scrollable: find
+                    .descendant(
+                        of: find.descendant(
+                            of: creator, matching: find.byType(ListView)),
+                        matching: find.byType(Scrollable))
+                    .first);
             await tester.pumpAndSettle();
-            await tester.tap(find.text(choice.$1));
+          }
+          expect(find.text('סקר אנונימי'),
+              choice.$2 == 'survey' ? findsOneWidget : findsNothing);
+          Navigator.of(tester.element(creator)).pop();
+          await tester.pumpAndSettle();
+          expect(tester.state(find.byType(GroupChatScreen)), same(state));
+          if (choice.$2 != 'survey') {
+            await tester.tap(find.byIcon(Icons.attach_file));
             await tester.pumpAndSettle();
-            expect(find.byKey(const ValueKey('chat-attachment-menu')),
-                findsNothing);
-            final creator = find.byType(CreateEducationFormScreen);
-            expect(creator, findsOneWidget);
-            final screen = tester.widget<CreateEducationFormScreen>(creator);
-            expect(screen.initialType, choice.$2);
-            expect(screen.lockType, isTrue);
-            expect(find.text(choice.$3), findsOneWidget);
-            expect(find.byType(SegmentedButton<String>), findsNothing);
-            expect(find.text('צירוף מסמך לחתימה *'),
-                choice.$2 == 'signature' ? findsOneWidget : findsNothing);
-            if (choice.$2 == 'survey') {
-              await tester.scrollUntilVisible(find.text('סקר אנונימי'), 150,
-                  scrollable: find
-                      .descendant(
-                          of: find.descendant(
-                              of: creator, matching: find.byType(ListView)),
-                          matching: find.byType(Scrollable))
-                      .first);
-              await tester.pumpAndSettle();
-            }
-            expect(find.text('סקר אנונימי'),
-                choice.$2 == 'survey' ? findsOneWidget : findsNothing);
-            Navigator.of(tester.element(creator)).pop();
-            await tester.pumpAndSettle();
-            expect(tester.state(find.byType(GroupChatScreen)), same(state));
-            if (choice.$2 != 'survey') {
-              await tester.tap(find.byIcon(Icons.attach_file));
-              await tester.pumpAndSettle();
-            }
           }
         }
         expect(tester.takeException(), isNull);

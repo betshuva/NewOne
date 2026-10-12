@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_sign_in_platform_interface/google_sign_in_platform_interface.dart';
 import 'package:google_sign_in_web/google_sign_in_web.dart';
@@ -12,6 +13,8 @@ class GoogleAuthFixture {
   String idToken = 'selected-google-token';
   String email = 'selected@example.invalid';
   String name = 'Selected Google Account';
+  bool cancelSelection = false;
+  bool failTokenRetrieval = false;
   final calls = <String>[];
   final _events = StreamController<GoogleSignInUserData?>.broadcast();
   GoogleSignInPlatform? _previous;
@@ -32,6 +35,10 @@ class GoogleAuthFixture {
 
   void _chooseAccount() {
     calls.add('choose');
+    if (cancelSelection) {
+      _events.add(null);
+      return;
+    }
     _events.add(GoogleSignInUserData(
       id: 'google-$email',
       email: email,
@@ -69,6 +76,11 @@ class _GooglePlugin extends GoogleSignInPlugin {
   Future<GoogleSignInTokenData> getTokens(
       {required String email, bool? shouldRecoverAuth}) async {
     fixture.calls.add('getTokens');
+    if (fixture.failTokenRetrieval) {
+      throw PlatformException(
+          code: 'fixture_google_unavailable',
+          message: 'Google credential retrieval unavailable');
+    }
     return GoogleSignInTokenData(
         idToken: fixture.idToken, accessToken: 'fixture-access');
   }

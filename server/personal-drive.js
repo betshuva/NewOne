@@ -99,7 +99,7 @@ async function downloadAppDataFile(refreshToken, fileId, maxBytes = 110 * 1024 *
   const headers = await client.getRequestHeaders();
   const response = await fetch(
     `${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`,
-    { headers, signal: AbortSignal.timeout(60000) });
+    { headers, signal: AbortSignal.timeout(180000) });
   if (!response.ok)
     throw new Error(`Google appDataFolder download failed (${response.status})`);
   const declared = Number(response.headers.get('content-length') || 0);

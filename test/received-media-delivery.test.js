@@ -40,7 +40,16 @@ function historyHandler(method, route, rowSets) {
     decryptAudioTranscript: () => null,
     projectGuideFilterNotice: row => row,
     SYSTEM_USER_ID: 'guide',
+    SAFE_INFORMATION_USER_ID: 'info',
     ...contentPolicy,
+    // PIN transactions have dedicated suites. This domain fixture represents
+    // an authorized PIN grant while retaining the pending-membership gate.
+    async filterPinQuery(db, req, sql, values) {
+      assert.equal(db, pool);
+      assert.ok(req.user.id);
+      assert.match(sql, /WHERE group_id=\$1 AND user_id=\$2 AND status='pending'/);
+      return db.query(sql, values);
+    },
     async projectFilteredHistory(_db, userId, rows, options = {}) {
       return rows.map(row => options.groupId && row.sender_id !== userId &&
         row.image_classification?.category === 'women'
@@ -191,4 +200,73 @@ test('a failed personal copy lookup preserves a hidden image decision', async ()
     async()=>[{...message,fileUrl:null,filter_hidden:true}]);
   const result=await fn({},'recipient',message);
   assert.equal(result.fileUrl,null);assert.equal(result.filter_hidden,true);
+});
+
+test('actual live Unicode text projection checks the receiving filter without a media lookup', async () => {
+  const message = { id: 'emoji-text', fromUserId: 'sender', fileType: 'text', text: 'שלום 😉',
+    classification: { inlineEmoji: true, category: 'women', detectedCategories: ['women'], uncertain: false } };
+  let projections = 0;
+  const fn = deliveryHelper(() => assert.fail('Unicode text has no personal media copy'), [],
+    async (_db, recipient, rows, options) => {
+      projections++; assert.equal(recipient, 'recipient'); assert.equal(options.groupId, null);
+      assert.equal(rows[0], message);
+      assert.equal(contentPolicy.contentAllowedByFilter({ women: false }, 'text', rows[0].classification), false);
+      return [{ ...rows[0], text: null, body: null, filter_hidden: true, hidden_reason: 'content_filter' }];
+    });
+  const visible = await fn({}, 'recipient', message);
+  assert.equal(projections, 1); assert.equal(visible.text, null); assert.equal(visible.body, null);
+  assert.equal(visible.filter_hidden, true); assert.equal(message.text, 'שלום 😉');
+});
+
+test('allowed live Unicode text keeps its classification and original text without a media lookup', async () => {
+  const message = { id: 'emoji-text', text: 'שלום 😉', classification: {
+    inlineEmoji: true, category: 'women', detectedCategories: ['women'], uncertain: false } };
+  let projections = 0;
+  const fn = deliveryHelper(() => assert.fail('text must not query a media copy'), [],
+    async (_db, _recipient, rows) => { projections++; return rows; });
+  assert.equal(await fn({}, 'recipient', message), message);
+  assert.equal(projections, 1);
+});
+
+test('Unicode text is fully hidden when the receiving filter lookup fails or returns no row', async () => {
+  const message = { id: 'emoji-text', text: 'שלום 😉', body: 'שלום 😉', classification: {
+    inlineEmoji: true, category: 'women', detectedCategories: ['women'], uncertain: false } };
+  for (const project of [async () => { throw new Error('fixture policy failure'); }, async () => []]) {
+    const fn = deliveryHelper(() => assert.fail('hidden text must not query media'), [], project);
+    const hidden = await fn({}, 'recipient', message);
+    assert.equal(hidden.text, null); assert.equal(hidden.body, null);
+    assert.equal(hidden.fileUrl, null); assert.equal(hidden.file_url, null);
+    assert.equal(hidden.filter_hidden, true); assert.equal(message.text, 'שלום 😉');
+  }
+});
+
+test('a disallowed caption is hidden before its otherwise permitted file is personalized', async () => {
+  const message = { id: 'caption', groupId: 'group', text: 'כיתוב 😉', body: 'כיתוב 😉',
+    fileUrl: '/sender/landscape', fileType: 'image',
+    classification: contentPolicy.combineMessageClassifications({ category: 'nonHumanImages',
+      detectedCategories: ['nonHumanImages'], uncertain: false }, {
+      inlineEmoji: true, category: 'women', detectedCategories: ['women'], uncertain: false }) };
+  const fn = deliveryHelper(() => assert.fail('hidden caption must not personalize a file'), [],
+    async (_db, _recipient, rows, options) => {
+      assert.equal(options.groupId, 'group');
+      assert.equal(contentPolicy.contentAllowedByFilter({ women: false }, 'image', rows[0].classification), false);
+      return [{ ...rows[0], fileUrl: null, text: null, body: null, filter_hidden: true }];
+    });
+  const hidden = await fn({}, 'recipient', message);
+  assert.equal(hidden.text, null); assert.equal(hidden.body, null); assert.equal(hidden.fileUrl, null);
+  assert.equal(hidden.filter_hidden, true); assert.equal(message.fileUrl, '/sender/landscape');
+});
+
+test('a permitted caption retains its checked text while switching to the recipient file copy', async () => {
+  const message = { id: 'caption', text: 'כיתוב 😉', fileUrl: '/sender/landscape', fileType: 'image',
+    classification: { inlineEmoji: true, category: 'women', detectedCategories: ['women'], uncertain: false } };
+  let projections = 0;
+  const fn = deliveryHelper(async (_db, recipient, rows) => {
+    assert.equal(recipient, 'recipient');
+    return [{ ...rows[0], fileUrl: '/recipient/landscape' }];
+  }, [], async (_db, _recipient, rows) => { projections++; return rows; });
+  const result = await fn({}, 'recipient', message);
+  assert.equal(projections, 1); assert.equal(result.text, 'כיתוב 😉');
+  assert.equal(result.classification.inlineEmoji, true); assert.equal(result.fileUrl, '/recipient/landscape');
+  assert.equal(message.fileUrl, '/sender/landscape');
 });

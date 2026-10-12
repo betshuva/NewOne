@@ -8,6 +8,7 @@ const test = require('node:test');
 const {
   DEFAULT_CONTENT_FILTER,
   contentAllowedByFilter,
+  combineMessageClassifications,
   normalizeContentFilter,
   resolveScopedContentFilter,
 } = require('../server/content-filter-policy');
@@ -32,6 +33,65 @@ const man = Object.freeze({
   category: 'men',
   detectedCategories: ['men'],
   uncertain: false,
+});
+
+test('caption classifications add categories while preserving file category and scanner versions', () => {
+  const emoji = { inlineEmoji: true, category: 'women', detectedCategories: ['women', 'men'],
+    uncertain: false, artworkVersion: 'emoji-art', moderationVersion: 'emoji-scan', artworkHash: 'emoji-hash' };
+  const merged = combineMessageClassifications(man, emoji);
+  assert.equal(merged.category, 'men');
+  assert.deepEqual(merged.detectedCategories, ['men', 'women']);
+  assert.equal(merged.inlineEmoji, true);
+  assert.equal(merged.artworkVersion, 'emoji-art');
+  assert.equal(merged.moderationVersion, 'emoji-scan');
+  assert.equal(merged.artworkHash, 'emoji-hash');
+  assert.equal(combineMessageClassifications({ category: 'children', uncertain: true }, emoji).uncertain, true);
+  assert.deepEqual(combineMessageClassifications({ category: 'children' }, { ...emoji, detectedCategories: [] })
+    .detectedCategories, ['children', 'women']);
+  assert.equal(combineMessageClassifications(man, { ...emoji, inlineEmoji: 'true' }), man);
+  assert.equal(combineMessageClassifications(null, null), null);
+  assert.equal(man.inlineEmoji, undefined);
+  assert.deepEqual(emoji.detectedCategories, ['women', 'men']);
+});
+
+test('inline caption categories cannot bypass the base type or another attached category', () => {
+  const emoji = { inlineEmoji: true, category: 'women', detectedCategories: ['women'] };
+  const combined = combineMessageClassifications(man, emoji);
+  for (const type of ['text', 'sticker', 'audio', 'document', 'image', 'video']) {
+    assert.equal(contentAllowedByFilter({ ...allowed, women: false }, type, combined), false, type);
+    assert.equal(contentAllowedByFilter({ ...allowed, men: false }, type, combined), false, type);
+    assert.equal(contentAllowedByFilter(allowed, type, combined), true, type);
+  }
+  assert.equal(contentAllowedByFilter({ ...allowed, video: false }, 'video', combined), false);
+  assert.equal(contentAllowedByFilter(allowed, 'archive', combined), false);
+});
+
+test('a specific caption never resolves unspecified or uncertain people in the file scan', () => {
+  const emoji = { inlineEmoji: true, category: 'women', detectedCategories: ['women'] };
+  for (const file of [{ category: 'people', detectedCategories: ['people'] },
+    { category: 'men', detectedCategories: ['men'], uncertain: true }]) {
+    const combined = combineMessageClassifications(file, emoji);
+    assert.equal(contentAllowedByFilter(allowed, 'image', combined), true);
+    for (const blockedCategory of ['men', 'women', 'children']) {
+      assert.equal(contentAllowedByFilter({ ...allowed, [blockedCategory]: false }, 'image', combined), false,
+        blockedCategory);
+    }
+  }
+});
+
+test('missing visual attachment classification remains conservative while ordinary text and audio keep their policy', () => {
+  const emoji = { inlineEmoji: true, category: 'women', detectedCategories: ['women'] };
+  for (const type of ['image', 'video']) {
+    const combined = combineMessageClassifications(null, emoji, type);
+    assert.equal(combined.category, 'people');
+    assert.equal(combined.uncertain, true);
+    assert.equal(contentAllowedByFilter({ ...allowed, men: false }, type, combined), false);
+    assert.equal(contentAllowedByFilter(allowed, type, combined), true);
+  }
+  for (const type of ['text', 'audio', 'document']) {
+    const combined = combineMessageClassifications(null, emoji, type);
+    assert.equal(contentAllowedByFilter({ ...allowed, men: false }, type, combined), true);
+  }
 });
 
 for (const context of ['private forwarding', 'group forwarding']) {

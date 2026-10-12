@@ -110,7 +110,7 @@ test('release readiness reports automatic deletion with backup', () => {
 
 test('safe release drains verified backups without treating message references as local storage requirements', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
-  const queue = source.slice(source.indexOf('async function runSafeReleaseQueue'),
+  const queue = source.slice(source.indexOf('function runSafeReleaseQueue'),
     source.indexOf('const PORT'));
   assert.match(queue, /releaseLocalMediaBatch/);
   assert.match(queue, /setTimeout\(runSafeReleaseQueue, 200\)/);
@@ -143,10 +143,15 @@ test('released media uses an encrypted adaptive LRU Drive cache', () => {
 
 test('automatic restore queue verifies cloud bytes before release eligibility', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
-  const queue = source.slice(source.indexOf('async function runAutomaticRestoreQueue'),
-    source.indexOf('async function runSafeReleaseQueue'));
+  const integration = source.slice(source.indexOf('async function runAutomaticRestoreQueue'),
+    source.indexOf('function runSafeReleaseQueue'));
+  const queue = fs.readFileSync(path.join(__dirname, '..', 'server', 'automatic-restore-queue.js'), 'utf8');
+  assert.match(source, /require\('\.\/automatic-restore-queue'\)/);
+  assert.match(integration, /return automaticRestoreQueue\(\)/);
+  assert.match(integration, /createAutomaticRestoreQueue/);
+  assert.match(integration, /releaseVerified: \(\) => runSafeReleaseQueue\(\)/);
   assert.match(queue, /downloadAppDataFile/);
-  assert.match(queue, /decryptBackupBuffer/);
+  assert.match(queue, /decryptBuffer/);
   assert.match(queue, /restoredHash !== row\.plaintext_sha256/);
   assert.match(queue, /restore_verified_at=now\(\)/);
   assert.doesNotMatch(queue, /fs\.writeFile/);

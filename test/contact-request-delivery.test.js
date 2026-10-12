@@ -34,7 +34,7 @@ async function fixture(t) {
     CREATE TABLE blocked_users(blocker_id uuid,blocked_id uuid);
     CREATE TABLE stored_files(id uuid DEFAULT gen_random_uuid(),public_url text UNIQUE,user_id uuid,file_type text,moderation_status text,moderation_details jsonb,content_purged_at timestamptz);
     CREATE TABLE message_requests(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),sender_id uuid REFERENCES users,recipient_id uuid REFERENCES users,body text,type text,file_url text,file_name text,created_at timestamptz DEFAULT now(),audit_operation_id uuid,audit_parent_event_id bigint);
-    CREATE TABLE messages(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),sender_id uuid,recipient_id uuid,reply_to_id uuid,body text,type text,file_url text,file_name text,created_at timestamptz DEFAULT now(),audit_operation_id uuid,audit_parent_event_id bigint);
+    CREATE TABLE messages(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),sender_id uuid,recipient_id uuid,reply_to_id uuid,body text,type text,file_url text,file_name text,delivery_summary jsonb,created_at timestamptz DEFAULT now(),audit_operation_id uuid,audit_parent_event_id bigint);
     CREATE TABLE message_status(message_id uuid,user_id uuid,status text,updated_at timestamptz,PRIMARY KEY(message_id,user_id));
     CREATE TABLE private_message_sends(user_id uuid,client_message_id text,request_hash text,result jsonb,PRIMARY KEY(user_id,client_message_id));`);
   await db.query(requests.REQUEST_SCHEMA);

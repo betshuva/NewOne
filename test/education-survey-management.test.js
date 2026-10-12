@@ -71,7 +71,7 @@ test('published survey deletion rolls back every failure before broadcasting', a
       assert.equal(response.code, 200);
       assert(!calls.some(c => c.sql === 'ROLLBACK'));
       assert(calls[1].sql.includes('FOR UPDATE OF f'));
-      assert(calls[1].sql.includes("gm.role='admin' AND gm.status='member'"));
+      assert(calls[1].sql.includes("(gm.role='admin' OR f.created_by=$2) AND gm.status='member'"));
       assert.deepEqual(events, [
         { room: 'group:group', name: 'message:deleted', data: { id: 'announcement', groupId: 'group' } },
         { room: 'group:group', name: 'education:updated', data: { groupId: 'group', formId: 'survey', action: 'deleted' } },
@@ -95,10 +95,10 @@ test('PostgreSQL keeps survey drafts private and unannounced and deletes publish
   await db.connect();
   try {
     await db.query('SET search_path TO pg_temp, public');
-    await db.query(`CREATE TEMP TABLE groups(id uuid PRIMARY KEY);
+    await db.query(`CREATE TEMP TABLE groups(id uuid PRIMARY KEY,send_permission text DEFAULT 'all');
       CREATE TEMP TABLE users(id uuid PRIMARY KEY);
       CREATE TEMP TABLE group_members(group_id uuid,user_id uuid,role text,status text,PRIMARY KEY(group_id,user_id));
-      CREATE TEMP TABLE education_forms(id uuid PRIMARY KEY,group_id uuid,form_type text,title text);
+      CREATE TEMP TABLE education_forms(id uuid PRIMARY KEY,group_id uuid,form_type text,title text,created_by uuid);
       CREATE TEMP TABLE education_form_recipients(form_id uuid REFERENCES education_forms(id) ON DELETE CASCADE,user_id uuid);
       CREATE TEMP TABLE education_form_responses(form_id uuid REFERENCES education_forms(id) ON DELETE CASCADE,answers jsonb);
       CREATE TEMP TABLE education_form_revisions(form_id uuid REFERENCES education_forms(id) ON DELETE CASCADE,snapshot jsonb);
@@ -113,7 +113,7 @@ test('PostgreSQL keeps survey drafts private and unannounced and deletes publish
       'CREATE TEMP TABLE education_survey_drafts'));
     const [group, otherGroup, admin, otherAdmin, member, pending, removed, outsider] =
       Array.from({ length: 8 }, () => crypto.randomUUID());
-    await db.query('INSERT INTO groups VALUES($1),($2)', [group, otherGroup]);
+    await db.query('INSERT INTO groups(id) VALUES($1),($2)', [group, otherGroup]);
     for (const user of [admin, otherAdmin, member, pending, removed, outsider])
       await db.query('INSERT INTO users VALUES($1)', [user]);
     for (const [user, role, status] of [[admin, 'admin', 'member'], [otherAdmin, 'admin', 'member'],
@@ -125,10 +125,11 @@ test('PostgreSQL keeps survey drafts private and unannounced and deletes publish
     const call = routes({ getPool: async () => ({ query,
       connect: async () => ({ query, release() {} }) }),
     io: { to: room => ({ emit: (name, data) => events.push({ room, name, data }) }) } });
-    for (const user of [member, pending, removed, outsider]) {
+    for (const user of [pending, removed, outsider]) {
       assert.equal((await call('GET', '/api/groups/:id/education-survey-drafts', user, group)).code, 403);
       assert.equal((await call('POST', '/api/groups/:id/education-survey-drafts', user, group, draftBody)).code, 403);
     }
+    assert.deepEqual((await call('GET', '/api/groups/:id/education-survey-drafts', member, group)).body.drafts, []);
     const saved = await call('POST', '/api/groups/:id/education-survey-drafts', admin, group, draftBody);
     assert.equal(saved.code, 201, JSON.stringify(saved.body));
     assert.deepEqual(saved.body.questions, draftBody.questions);
@@ -157,7 +158,7 @@ test('PostgreSQL keeps survey drafts private and unannounced and deletes publish
 
     const [survey, approval, failure, announcement, republished, reply, failureMessage] =
       Array.from({ length: 7 }, () => crypto.randomUUID());
-    await db.query("INSERT INTO education_forms VALUES($1,$4,'survey','סקר'),($2,$4,'approval','אישור'),($3,$4,'survey','fail')",
+    await db.query("INSERT INTO education_forms(id,group_id,form_type,title) VALUES($1,$4,'survey','סקר'),($2,$4,'approval','אישור'),($3,$4,'survey','fail')",
       [survey, approval, failure, group]);
     for (const table of ['education_form_recipients', 'education_form_responses', 'education_form_revisions',
       'education_form_reminders', 'education_response_change_requests'])

@@ -7,6 +7,8 @@ class GoogleAuthFixture {
   String idToken = 'selected-google-token';
   String email = 'selected@example.invalid';
   String name = 'Selected Google Account';
+  bool cancelSelection = false;
+  bool failTokenRetrieval = false;
   final calls = <String>[];
   TargetPlatform? _previousPlatform;
   WidgetTester? _tester;
@@ -22,6 +24,7 @@ class GoogleAuthFixture {
         (call) async {
       calls.add(call.method);
       if (call.method == 'signIn') {
+        if (cancelSelection) return null;
         return {
           'id': 'google-$email',
           'email': email,
@@ -30,6 +33,11 @@ class GoogleAuthFixture {
         };
       }
       if (call.method == 'getTokens') {
+        if (failTokenRetrieval) {
+          throw PlatformException(
+              code: 'fixture_google_unavailable',
+              message: 'Google credential retrieval unavailable');
+        }
         return {'idToken': idToken, 'accessToken': 'fixture-access'};
       }
       return null;
@@ -37,9 +45,12 @@ class GoogleAuthFixture {
   }
 
   Future<void> choose(WidgetTester tester, {bool registration = false}) async {
-    final button = find
-        .text(registration ? 'הרשמה באמצעות Google' : 'המשך עם Google')
-        .last;
+    final keyedLogin = find.byKey(const ValueKey('google-login-button'));
+    final button = !registration && keyedLogin.evaluate().isNotEmpty
+        ? keyedLogin
+        : find
+            .text(registration ? 'הרשמה באמצעות Google' : 'המשך עם Google')
+            .last;
     await tester.ensureVisible(button);
     await tester.tap(button);
     await tester.pump();

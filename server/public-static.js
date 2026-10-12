@@ -6,7 +6,8 @@ const express = require('express');
 // The project directory also holds credentials, logs, backups and source code.
 // Only files deliberately published by the web application may be served.
 const publicFiles = new Set([
-  '/', '/index.html', '/home.html', '/privacy.html', '/terms.html',
+  '/', '/index.html', '/home.html', '/home.css', '/home.js', '/entry-route.js',
+  '/privacy.html', '/terms.html',
   '/delete-account.html', '/child-safety.html', '/accessibility.html',
   '/open-source-licenses.html', '/admin.html', '/admin-audit.html', '/admin-gmail.html', '/admin-storage.html',
   '/admin-members.html', '/admin-reports.html', '/admin-scans.html', '/groups.html', '/invite-v2.html', '/group-invite.html', '/public-users.html',

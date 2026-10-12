@@ -113,14 +113,18 @@ CREATE OR REPLACE FUNCTION betshuva_filter_audit_classification(value jsonb)
 RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
  SELECT CASE WHEN value IS NULL THEN NULL ELSE jsonb_strip_nulls(jsonb_build_object(
   'category',value->'category','detectedCategories',value->'detectedCategories',
-  'uncertain',value->'uncertain','source',value->'source')) END
+  'uncertain',value->'uncertain','source',value->'source',
+  'inlineEmoji',value->'inlineEmoji','artworkVersion',value->'artworkVersion',
+  'moderationVersion',value->'moderationVersion','artworkHash',value->'artworkHash')) END
 $$;
 
 CREATE OR REPLACE FUNCTION betshuva_filter_audit_message() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE asset record; recipient record; effective jsonb; scope_kind text; target uuid; decision text;
   group_policy jsonb; group_policy_revisions jsonb;
 BEGIN
-  IF NEW.type NOT IN ('image','video') THEN RETURN NEW; END IF;
+  IF NEW.type NOT IN ('image','video') AND
+    COALESCE(NEW.delivery_summary->'inlineEmojiClassification'->>'inlineEmoji','false')<>'true'
+    THEN RETURN NEW; END IF;
   IF NEW.group_id IS NOT NULL AND (NEW.delivery_summary IS NULL OR
      (TG_OP='UPDATE' AND OLD.delivery_summary IS NOT DISTINCT FROM NEW.delivery_summary)) THEN RETURN NEW; END IF;
   IF NEW.group_id IS NULL AND TG_OP<>'INSERT' THEN RETURN NEW; END IF;
@@ -164,6 +168,7 @@ BEGIN
      VALUES(decision,recipient.id,NEW.sender_id,scope_kind,target,NEW.id,asset.id,
       jsonb_build_object('policy',effective,'generalFilter',recipient.content_filter,'scopedFilter',recipient.filter_override,
        'classification',asset.classification,'moderationStatus',asset.moderation_status,
+       'inlineEmojiClassification',betshuva_filter_audit_classification(NEW.delivery_summary->'inlineEmojiClassification'),
        'groupFilter',(SELECT content_filter FROM groups WHERE id=NEW.group_id),
        'groupPolicy',group_policy,'groupPolicyRevisionIds',group_policy_revisions,
        'revisionIds',betshuva_filter_audit_revision_ids(recipient.id,scope_kind,target),
@@ -243,7 +248,8 @@ async function recordFilterEvent(db, event) {
 // Persist the policy actually used at a rejection branch. This is distinct from
 // a later delivery trigger's snapshot and from untrusted browser telemetry.
 async function recordFilterDecision(db, decision) {
-  if (!['image','video','document'].includes(decision.messageType)) return null;
+  const inlineEmoji = decision.classification?.inlineEmoji === true;
+  if (!['image','video','document'].includes(decision.messageType) && !inlineEmoji) return null;
   let fileId=decision.fileId || null;
   if (!fileId && decision.fileUrl) {
     fileId=(await db.query('SELECT id FROM stored_files WHERE public_url=$1',
@@ -251,7 +257,7 @@ async function recordFilterDecision(db, decision) {
   }
   const classification=decision.classification;
   const snapshot=classification ? Object.fromEntries(
-    ['category','detectedCategories','uncertain','source'].filter(key=>classification[key]!==undefined)
+    ['category','detectedCategories','uncertain','source','inlineEmoji','artworkVersion','moderationVersion','artworkHash'].filter(key=>classification[key]!==undefined)
       .map(key=>[key,classification[key]])) : null;
   return recordFilterEvent(db,{kind:decision.allowed?'decision_allowed':'decision_blocked',
     userId:decision.userId,actorId:decision.actorId,scopeType:decision.scopeType,

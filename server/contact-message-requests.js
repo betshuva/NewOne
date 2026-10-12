@@ -1,14 +1,15 @@
 'use strict';
 const { marketplaceConversation } = require('./friendship-policy');
 
-const { contentAllowedByFilter } = require('./content-filter-policy');
+const { contentAllowedByFilter, combineMessageClassifications } = require('./content-filter-policy');
 const { shortFilterReason } = require('./guide-filter-notice');
 
 const REQUEST_SCHEMA = `ALTER TABLE message_requests
   ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending',
   ADD COLUMN IF NOT EXISTS rejection_reason TEXT,
   ADD COLUMN IF NOT EXISTS rejection_code TEXT,
-  ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+  ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS emoji_classification JSONB;
   CREATE INDEX IF NOT EXISTS message_requests_pending_recipient
     ON message_requests(recipient_id,sender_id,created_at) WHERE status='pending';`;
 
@@ -21,7 +22,10 @@ async function lockContactRequests(db, senderId, recipientId) {
 // Serialize queueing with acceptance/decline, and deduplicate the same pending
 // attachment when an upload retry races with the ordinary send path.
 async function queueContactRequest(db, { senderId, recipientId, body, type,
-  fileUrl, fileName, operationId = null, parentEventId = null }) {
+  fileUrl, fileName, operationId = null, parentEventId = null,
+  emojiClassification = null }) {
+  const inlineClassification = typeof body === 'string' && body.trim() &&
+    emojiClassification?.inlineEmoji === true ? emojiClassification : null;
   const ownTransaction = typeof db.connect === 'function' && !(db instanceof require('pg').Client);
   const client = ownTransaction ? await db.connect() : db;
   try {
@@ -36,14 +40,26 @@ async function queueContactRequest(db, { senderId, recipientId, body, type,
     let request = null;
     if (String(senderId) !== String(recipientId) && !contact.rows.length &&
         !await marketplaceConversation(client,senderId,recipientId)) {
-      if (fileUrl) request = (await client.query(`SELECT id,created_at FROM message_requests
+      if (fileUrl) request = (await client.query(`SELECT id,created_at,body,file_name FROM message_requests
         WHERE sender_id=$1 AND recipient_id=$2 AND file_url=$3 AND status='pending'
         ORDER BY created_at LIMIT 1`, [senderId, recipientId, fileUrl])).rows[0];
+      if (request && typeof body === 'string' && body.trim() && request.body !== body &&
+          !(body === fileName && !inlineClassification)) {
+        // A background scan may queue the attachment before its real caption.
+        // Complete that placeholder once; a conflicting logical send is explicit.
+        if (!request.body || request.body === request.file_name) {
+          await client.query(`UPDATE message_requests SET body=$2,emoji_classification=$3::jsonb
+            WHERE id=$1 AND status='pending'`, [request.id, body,
+            inlineClassification ? JSON.stringify(inlineClassification) : null]);
+        } else throw Object.assign(new Error('לקובץ זה כבר ממתינה הודעה עם כיתוב אחר. יש לאשר או לבטל אותה לפני שליחה נוספת'),
+          { status: 409, code: 'CONTACT_REQUEST_CONTENT_CONFLICT' });
+      }
       if (!request) request = (await client.query(`INSERT INTO message_requests
-        (sender_id,recipient_id,body,type,file_url,file_name,audit_operation_id,audit_parent_event_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,created_at`,
+        (sender_id,recipient_id,body,type,file_url,file_name,audit_operation_id,audit_parent_event_id,emoji_classification)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) RETURNING id,created_at`,
       [senderId, recipientId, body || null, type, fileUrl || null, fileName || null,
-        operationId, parentEventId])).rows[0];
+        operationId, parentEventId,
+        inlineClassification ? JSON.stringify(inlineClassification) : null])).rows[0];
     }
     if (ownTransaction) await client.query('COMMIT');
     return request;
@@ -67,15 +83,21 @@ async function settleContactRequests(db, { senderId, recipientId, filter, declin
   const sent = [], rejected = [];
   for (const request of pending.rows) {
     const type = request.file_url ? request.stored_type || request.type : request.type;
+    const inlineClassification = request.emoji_classification?.inlineEmoji === true
+      ? request.emoji_classification : null;
+    const fileClassification = request.file_url ? request.moderation_details?.classification : null;
+    const classification = combineMessageClassifications(fileClassification, inlineClassification,
+      request.file_url ? type : null);
+    const baseAllowed = contentAllowedByFilter(filter, type, fileClassification);
     let reason = null, code = null;
     if (decline) { reason = 'הנמען דחה את בקשת החברות'; code = 'contact_request_declined'; }
     else if (blockedUser.rows.length) { reason = 'נחסמת על ידי הנמען'; code = 'recipient_blocked_sender'; }
     else if (request.file_url && (request.moderation_status !== 'approved' || request.content_purged_at)) {
       reason = request.moderation_details?.reason || 'הקובץ אינו זמין או שבדיקת הבטיחות שלו לא הושלמה';
       code = 'file_not_approved';
-    } else if (!contentAllowedByFilter(filter, type, request.moderation_details?.classification)) {
-      reason = shortFilterReason({ filter, fileType: type,
-        classification: request.moderation_details?.classification }) + ' בהגדרות הנמען';
+    } else if (!baseAllowed || !contentAllowedByFilter(filter, type, classification)) {
+      reason = shortFilterReason({ filter, fileType: !baseAllowed ? type : inlineClassification ? 'image' : type,
+        classification: !baseAllowed ? fileClassification : classification }) + ' בהגדרות הנמען';
       code = 'recipient_content_filter';
     } else if (request.file_url) {
       try {
@@ -94,14 +116,18 @@ async function settleContactRequests(db, { senderId, recipientId, filter, declin
       await audit(db, request, { rejected: true, reason, code });
     } else {
       const fallback = auditIds();
+      const deliverySummary = inlineClassification
+        ? { inlineEmojiClassification: inlineClassification } : null;
       const saved = await db.query(`INSERT INTO messages
-        (sender_id,recipient_id,body,type,file_url,file_name,audit_operation_id,audit_parent_event_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-        RETURNING id,created_at,sender_id,body,type,file_url,file_name`,
+        (sender_id,recipient_id,body,type,file_url,file_name,audit_operation_id,audit_parent_event_id${deliverySummary ? ',delivery_summary' : ''})
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8${deliverySummary ? ',$9::jsonb' : ''})
+        RETURNING id,created_at,sender_id,body,type,file_url,file_name${deliverySummary ? ',delivery_summary' : ''}`,
       [senderId, recipientId, request.body, type, request.file_url, request.file_name,
         request.audit_operation_id || fallback[0],
-        request.audit_operation_id ? request.audit_parent_event_id : fallback[1]]);
+        request.audit_operation_id ? request.audit_parent_event_id : fallback[1],
+        ...(deliverySummary ? [JSON.stringify(deliverySummary)] : [])]);
       const message = saved.rows[0];
+      if (inlineClassification) message.classification = classification;
       await audit(db, request, { message });
       await db.query('DELETE FROM message_requests WHERE id=$1', [request.id]);
       sent.push(message);

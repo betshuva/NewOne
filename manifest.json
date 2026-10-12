@@ -1,11 +1,11 @@
 {
-    "name": "flutter_app",
-    "short_name": "flutter_app",
-    "start_url": ".",
+    "name": "בתשובה — הקהילה שלכם במקום אחד",
+    "short_name": "בתשובה",
+    "start_url": "./?app=1",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#F2F7FB",
+    "theme_color": "#1B6CA8",
+    "description": "שיחות, קבוצות ומודעות לקהילה, עם הגדרות סינון אישיות.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

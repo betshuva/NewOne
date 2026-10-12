@@ -24,7 +24,8 @@ test('storage allowance, reservations and personal Drive migration', {
     CREATE TABLE pending_scans(file_url TEXT);
     CREATE TABLE deleted_media_sources(storage_path TEXT);
     CREATE TABLE media_backup_items(stored_file_id UUID PRIMARY KEY,user_id UUID,status TEXT,remote_file_id TEXT,
-      encrypted_sha256 TEXT,plaintext_sha256 TEXT,encryption_metadata JSONB,attempt_count INTEGER DEFAULT 0,updated_at TIMESTAMPTZ);
+      encrypted_sha256 TEXT,plaintext_sha256 TEXT,encryption_metadata JSONB,restore_verified_at TIMESTAMPTZ,
+      attempt_count INTEGER DEFAULT 0,updated_at TIMESTAMPTZ);
     CREATE TABLE central_drive_objects(id UUID DEFAULT gen_random_uuid(),file_id UUID,status TEXT,next_attempt_at TIMESTAMPTZ);`);
   await pool.query(quota.SCHEMA);
   async function owner() {
@@ -95,8 +96,8 @@ test('storage allowance, reservations and personal Drive migration', {
   await t.test('all old files migrate on connection and central copies retire only after a fresh successful read', async () => {
     const user = await owner(); const source = await insert(user, 100);
     await pool.query("INSERT INTO central_drive_objects(file_id,status) VALUES($1,'verified')", [source.id]);
-    await pool.query(`INSERT INTO media_backup_items(stored_file_id,user_id,status,plaintext_sha256,encryption_metadata)
-      VALUES($1,$2,'verified',$3,'{"keySource":"server_vault"}')`, [source.id, user, source.content_sha256]);
+    await pool.query(`INSERT INTO media_backup_items(stored_file_id,user_id,status,plaintext_sha256,encryption_metadata,restore_verified_at)
+      VALUES($1,$2,'verified',$3,'{"keySource":"server_vault"}',now())`, [source.id, user, source.content_sha256]);
     await connect(user); await quota.queueUserMigration(pool, user);
     assert.equal((await pool.query('SELECT storage_tier FROM stored_files WHERE id=$1',[source.id])).rows[0].storage_tier,'personal');
     const maintenance = verifyBytes => quota.createMaintenance({ getPool: async () => pool,
@@ -122,8 +123,8 @@ test('storage allowance, reservations and personal Drive migration', {
       assert.equal(row.storage_tier, i === 2 ? 'service' : 'personal');
     }
     const file = files[0];
-    await pool.query(`INSERT INTO media_backup_items(stored_file_id,user_id,status,plaintext_sha256,encryption_metadata)
-      VALUES($1,$2,'verified',$3,'{"keySource":"server_vault"}')`, [file.id,user,file.content_sha256]);
+    await pool.query(`INSERT INTO media_backup_items(stored_file_id,user_id,status,plaintext_sha256,encryption_metadata,restore_verified_at)
+      VALUES($1,$2,'verified',$3,'{"keySource":"server_vault"}',now())`, [file.id,user,file.content_sha256]);
     await quota.createMaintenance({ getPool: async () => pool, verifyAccount: async () => {},
       verifyBytes: async () => Buffer.alloc(100), lockKey: crypto.randomBytes(4).readInt32BE() })();
     assert.ok((await pool.query('SELECT personal_storage_verified_at FROM stored_files WHERE id=$1',[file.id])).rows[0].personal_storage_verified_at);

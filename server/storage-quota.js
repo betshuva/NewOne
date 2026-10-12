@@ -215,7 +215,8 @@ function createMaintenance({ getPool, verifyBytes = require('./local-media-relea
         JOIN media_backup_items m ON m.stored_file_id=sf.id AND m.user_id=sf.user_id
         WHERE sf.storage_tier='personal' AND sf.personal_storage_verified_at IS NULL
           AND sf.content_purged_at IS NULL AND ${ARCHIVABLE_SQL}
-          AND m.status='verified' AND m.encryption_metadata->>'keySource'='server_vault'
+          AND m.status='verified' AND m.restore_verified_at IS NOT NULL
+          AND m.encryption_metadata->>'keySource'='server_vault'
         ORDER BY sf.created_at LIMIT 20`)).rows;
       for (const candidate of candidates) {
         const db = await pool.connect();
@@ -232,6 +233,7 @@ function createMaintenance({ getPool, verifyBytes = require('./local-media-relea
             JOIN cloud_backup_accounts c ON c.user_id=sf.user_id AND c.status='connected'
             WHERE sf.id=$1 AND sf.storage_tier='personal' AND sf.personal_storage_verified_at IS NULL
               AND ${ARCHIVABLE_SQL} AND sf.content_purged_at IS NULL AND m.status='verified'
+              AND m.restore_verified_at IS NOT NULL
               AND m.plaintext_sha256=sf.content_sha256 AND m.encryption_metadata->>'keySource'='server_vault'
             FOR UPDATE OF sf,m`, [candidate.id])).rows[0];
           if (row) {

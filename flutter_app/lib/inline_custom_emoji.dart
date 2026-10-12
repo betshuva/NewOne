@@ -6,6 +6,8 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import 'chat_text_formatting.dart';
+
 // Legacy IDs 1–150 remain stable. New server artwork uses the remaining
 // BMP private-use characters; each image still occupies one editor position.
 const _emojiCount = 6400;
@@ -57,10 +59,129 @@ bool _isDraftEmoji(String character) =>
     RegExp(r'[\u{1f000}-\u{1faff}\u2600-\u27bf]', unicode: true)
         .hasMatch(character);
 
-int? _precedingEmojiRunStart(String prefix) {
+bool _isColorMetadataRun(ChatTextRun run) =>
+    run.marker &&
+    (run.text.startsWith('[[bt-style:') ||
+        run.text.startsWith('[[/bt-style]]'));
+
+Map<int, int> _colorMetadataRanges(String text) {
+  if (!text.contains('[[bt-style:')) return const {};
+  final result = <int, int>{};
+  var offset = 0;
+  for (final run in parseChatFormattedText(text, preserveMarkers: true)) {
+    if (_isColorMetadataRun(run)) result[offset] = offset + run.text.length;
+    offset += run.text.length;
+  }
+  return result;
+}
+
+TextEditingValue _snapColorMetadataSelection(
+    TextEditingValue incoming, TextEditingValue previous) {
+  final selection = incoming.selection;
+  if (!selection.isValid ||
+      selection.end > incoming.text.length ||
+      (incoming.isComposingRangeValid && !incoming.composing.isCollapsed)) {
+    return incoming;
+  }
+  final metadata = _colorMetadataRanges(incoming.text);
+  if (metadata.isEmpty) return incoming;
+  final sameSource = incoming.text == previous.text;
+  int snap(int offset, int oldOffset) {
+    for (final entry in metadata.entries) {
+      if (offset <= entry.key || offset >= entry.value) continue;
+      if (sameSource && oldOffset >= 0 && oldOffset != offset) {
+        return offset > oldOffset ? entry.value : entry.key;
+      }
+      return offset - entry.key < entry.value - offset
+          ? entry.key
+          : entry.value;
+    }
+    return offset;
+  }
+
+  final base = snap(selection.baseOffset, previous.selection.baseOffset);
+  final extent = snap(selection.extentOffset, previous.selection.extentOffset);
+  if (base == selection.baseOffset && extent == selection.extentOffset) {
+    return incoming;
+  }
+  return incoming.copyWith(
+      selection: TextSelection(
+    baseOffset: base,
+    extentOffset: extent,
+    affinity: selection.affinity,
+    isDirectional: selection.isDirectional,
+  ));
+}
+
+TextEditingValue _deleteVisibleColorNeighbor(
+    TextEditingValue incoming, TextEditingValue previous) {
+  if (!previous.selection.isValid ||
+      !previous.selection.isCollapsed ||
+      !incoming.selection.isCollapsed ||
+      (previous.isComposingRangeValid && !previous.composing.isCollapsed) ||
+      (incoming.isComposingRangeValid && !incoming.composing.isCollapsed) ||
+      previous.text.length - incoming.text.length != 1) {
+    return incoming;
+  }
+  final cursor = previous.selection.extentOffset;
+  final backward = cursor > 0 &&
+      cursor <= previous.text.length &&
+      incoming.selection.extentOffset == cursor - 1 &&
+      incoming.text == previous.text.replaceRange(cursor - 1, cursor, '');
+  final forward = cursor >= 0 &&
+      cursor < previous.text.length &&
+      incoming.selection.extentOffset == cursor &&
+      incoming.text == previous.text.replaceRange(cursor, cursor + 1, '');
+  if (!backward && !forward) return incoming;
+  final changed = backward ? cursor - 1 : cursor;
+  final metadata = _colorMetadataRanges(previous.text);
+  MapEntry<int, int>? token;
+  for (final entry in metadata.entries) {
+    if (changed >= entry.key && changed < entry.value) {
+      token = entry;
+      break;
+    }
+  }
+  if (token == null) return incoming;
+  TextRange? neighbor;
+  var offset = 0;
+  for (final character in previous.text.characters) {
+    final next = offset + character.length;
+    final hidden = character == '\u2066' ||
+        character == '\u2069' ||
+        metadata.entries
+            .any((entry) => offset >= entry.key && offset < entry.value);
+    if (!hidden) {
+      if (backward && next <= token.key) {
+        neighbor = TextRange(start: offset, end: next);
+      } else if (!backward && offset >= token.value) {
+        neighbor = TextRange(start: offset, end: next);
+        break;
+      }
+    }
+    offset = next;
+  }
+  if (neighbor == null) return previous;
+  final removed = neighbor.end - neighbor.start;
+  return incoming.copyWith(
+      text: previous.text.replaceRange(neighbor.start, neighbor.end, ''),
+      selection: TextSelection.collapsed(
+          offset: backward ? cursor - removed : cursor,
+          affinity: incoming.selection.affinity),
+      composing: TextRange.empty);
+}
+
+int? _precedingEmojiRunStart(String prefix,
+    {Map<int, int> metadata = const {}}) {
   int? start;
   var offset = 0;
+  var hiddenEnd = 0;
   for (final character in prefix.characters) {
+    hiddenEnd = metadata[offset] ?? hiddenEnd;
+    if (offset < hiddenEnd) {
+      offset += character.length;
+      continue;
+    }
     if (_isDraftEmoji(character)) {
       start ??= offset;
     } else if (character != ' ' && character != '\t') {
@@ -159,10 +280,62 @@ class _MessageEmojiImage extends StatelessWidget {
   }
 }
 
+TextStyle? _chatRunStyle(TextStyle base, ChatTextRun run) {
+  if (!run.bold &&
+      !run.italic &&
+      !run.strikethrough &&
+      !run.code &&
+      !run.quote &&
+      !run.marker &&
+      run.foregroundRgb == null &&
+      run.backgroundRgb == null) {
+    return null;
+  }
+  final foreground =
+      run.foregroundRgb == null ? null : Color(0xFF000000 | run.foregroundRgb!);
+  final background =
+      run.backgroundRgb == null ? null : Color(0xFF000000 | run.backgroundRgb!);
+  final color = foreground ?? base.color ?? Colors.black;
+  if (_isColorMetadataRun(run)) {
+    // Metadata occupies the original source offsets, but never takes visible
+    // space in the composer. Selection and IME still refer to the exact text.
+    return const TextStyle(
+        fontSize: 0,
+        letterSpacing: 0,
+        color: Colors.transparent,
+        backgroundColor: Colors.transparent);
+  }
+  return TextStyle(
+    fontWeight: run.bold ? FontWeight.bold : null,
+    fontStyle: run.italic || run.quote ? FontStyle.italic : null,
+    decoration: run.strikethrough
+        ? TextDecoration.combine([
+            if (base.decoration != null) base.decoration!,
+            TextDecoration.lineThrough,
+          ])
+        : null,
+    fontFamily: run.code ? 'monospace' : null,
+    backgroundColor:
+        background ?? (run.code ? color.withValues(alpha: 0.08) : null),
+    color: run.marker
+        ? color.withValues(alpha: 0.48)
+        : run.quote && foreground == null
+            ? color.withValues(alpha: 0.78)
+            : foreground,
+  );
+}
+
+Widget _chatArtworkBackground(TextStyle? style, Widget child) {
+  final color = style?.backgroundColor;
+  return color == null ? child : ColoredBox(color: color, child: child);
+}
+
 TextSpan _messageEmojiSpans(BuildContext context, String text,
-    Map<String, _MessageEmojiArtwork> catalog, TextStyle? style) {
+    Map<String, _MessageEmojiArtwork> catalog, TextStyle? style,
+    {List<ChatTextRun>? formattedRuns}) {
   final effectiveStyle = DefaultTextStyle.of(context).style.merge(style);
-  final characters = text.characters.toList();
+  final visibleText = formattedRuns?.map((run) => run.text).join() ?? text;
+  final characters = visibleText.characters.toList();
   final visible = characters.where((character) => character.trim().isNotEmpty);
   final count = visible.length;
   final emojiOnly = count >= 1 &&
@@ -179,39 +352,54 @@ TextSpan _messageEmojiSpans(BuildContext context, String text,
   // Text.rich scales WidgetSpan children with the surrounding text.
   final size = baseSize * inlineEmojiScale;
   final spans = <InlineSpan>[];
-  final plain = StringBuffer();
-  void flushPlain() {
-    if (plain.isEmpty) return;
-    spans
-        .addAll(_emojiSpans(context, plain.toString(), style: style).children!);
-    plain.clear();
-  }
-
-  for (final character in characters) {
-    final artwork = catalog[_emojiCatalogKey(character)];
-    if (artwork == null) {
-      plain.write(character);
-      continue;
+  void addRun(String runText, TextStyle? formattingStyle) {
+    final plain = StringBuffer();
+    void flushPlain() {
+      if (plain.isEmpty) return;
+      spans.addAll(_emojiSpans(context, plain.toString(),
+              style: style, formattingStyle: formattingStyle)
+          .children!);
+      plain.clear();
     }
-    flushPlain();
-    spans.add(WidgetSpan(
-      alignment: PlaceholderAlignment.middle,
-      child: Semantics(
-        label: '${artwork.label} $character',
-        image: true,
-        child: ExcludeSemantics(
-          child: _MessageEmojiImage(
-            key: ValueKey<String>('message-unicode-emoji-${artwork.code}'),
-            code: artwork.code,
-            character: character,
-            size: size,
-            style: effectiveStyle,
+
+    for (final character in runText.characters) {
+      final artwork = catalog[_emojiCatalogKey(character)];
+      if (artwork == null) {
+        plain.write(character);
+        continue;
+      }
+      flushPlain();
+      spans.add(WidgetSpan(
+        alignment: PlaceholderAlignment.middle,
+        style: formattingStyle,
+        child: Semantics(
+          label: '${artwork.label} $character',
+          image: true,
+          child: ExcludeSemantics(
+            child: _chatArtworkBackground(
+                formattingStyle,
+                _MessageEmojiImage(
+                  key:
+                      ValueKey<String>('message-unicode-emoji-${artwork.code}'),
+                  code: artwork.code,
+                  character: character,
+                  size: size,
+                  style: effectiveStyle.merge(formattingStyle),
+                )),
           ),
         ),
-      ),
-    ));
+      ));
+    }
+    flushPlain();
   }
-  flushPlain();
+
+  if (formattedRuns == null) {
+    addRun(text, null);
+  } else {
+    for (final run in formattedRuns) {
+      addRun(run.text, _chatRunStyle(effectiveStyle, run));
+    }
+  }
   return TextSpan(style: style, children: spans);
 }
 
@@ -506,7 +694,8 @@ TextEditingValue _decodeEditingValue(TextEditingValue incoming) {
   );
 }
 
-TextEditingValue _isolateEmojiEditingValue(TextEditingValue incoming) {
+TextEditingValue _isolateEmojiEditingValue(TextEditingValue incoming,
+    {bool textFormatting = false}) {
   // Leave active IME composition untouched until it commits.
   if (incoming.isComposingRangeValid && !incoming.composing.isCollapsed) {
     return incoming;
@@ -520,7 +709,15 @@ TextEditingValue _isolateEmojiEditingValue(TextEditingValue incoming) {
     int? start;
     var end = 0;
     var offset = 0;
+    final metadata =
+        textFormatting ? _colorMetadataRanges(plain) : const <int, int>{};
+    var hiddenEnd = 0;
     for (final character in plain.characters) {
+      hiddenEnd = metadata[offset] ?? hiddenEnd;
+      if (offset < hiddenEnd) {
+        offset += character.length;
+        continue;
+      }
       final emoji = _isDraftEmoji(character);
       if (emoji) {
         start ??= offset;
@@ -570,13 +767,20 @@ TextEditingValue _isolateEmojiEditingValue(TextEditingValue incoming) {
 }
 
 class InlineEmojiController extends TextEditingController {
-  InlineEmojiController({String? text, this.isolateEmojiRuns = false})
+  InlineEmojiController(
+      {String? text,
+      this.isolateEmojiRuns = false,
+      this.textFormatting = false})
       : super.fromValue(isolateEmojiRuns
             ? _isolateEmojiEditingValue(
-                TextEditingValue(text: decodeInlineEmojiText(text ?? '')))
+                TextEditingValue(text: decodeInlineEmojiText(text ?? '')),
+                textFormatting: textFormatting)
             : TextEditingValue(text: decodeInlineEmojiText(text ?? '')));
 
   final bool isolateEmojiRuns;
+
+  /// Style chat drafts while retaining every source marker and caret offset.
+  final bool textFormatting;
   bool _disposed = false;
   bool _layoutCheckScheduled = false;
 
@@ -588,6 +792,8 @@ class InlineEmojiController extends TextEditingController {
     }
     final oldText = inlineEmojiPlainText(value.text);
     final newText = inlineEmojiPlainText(incoming.text);
+    final metadata =
+        textFormatting ? _colorMetadataRanges(oldText) : const <int, int>{};
     // Backspace at the visual left edge first reaches the invisible closing
     // isolate. Remove the leftmost artwork instead of restoring that marker.
     final cursor = value.selection.extentOffset;
@@ -598,7 +804,8 @@ class InlineEmojiController extends TextEditingController {
         value.text[cursor - 1] == '\u2069' &&
         incoming.selection.extentOffset == cursor - 1) {
       final end = inlineEmojiPlainText(value.text.substring(0, cursor)).length;
-      final start = _precedingEmojiRunStart(oldText.substring(0, end));
+      final start = _precedingEmojiRunStart(oldText.substring(0, end),
+          metadata: metadata);
       if (start != null) {
         final length = oldText.substring(start).characters.first.length;
         return incoming.copyWith(
@@ -628,7 +835,8 @@ class InlineEmojiController extends TextEditingController {
     if (extent != start + insertedLength) return incoming;
     // Artwork runs have an LTR layout. Insert each new choice at their left
     // edge, keeping previous choices on the right and the caret after the run.
-    final runStart = _precedingEmojiRunStart(oldText.substring(0, start));
+    final runStart = _precedingEmojiRunStart(oldText.substring(0, start),
+        metadata: metadata);
     final target = runStart ?? start;
     return incoming.copyWith(
       text: oldText.substring(0, target) +
@@ -641,9 +849,16 @@ class InlineEmojiController extends TextEditingController {
 
   @override
   set value(TextEditingValue newValue) {
-    final decoded = _decodeEditingValue(newValue);
+    final decodedValue = _decodeEditingValue(newValue);
+    final decoded = textFormatting
+        ? _snapColorMetadataSelection(
+            repairChatColorEditingValue(
+                value, _deleteVisibleColorNeighbor(decodedValue, value)),
+            value)
+        : decodedValue;
     super.value = isolateEmojiRuns
-        ? _isolateEmojiEditingValue(_insertEmojisOnTheLeft(decoded))
+        ? _isolateEmojiEditingValue(_insertEmojisOnTheLeft(decoded),
+            textFormatting: textFormatting)
         : decoded;
   }
 
@@ -655,6 +870,12 @@ class InlineEmojiController extends TextEditingController {
   }) {
     final spans = _emojiSpans(context, text,
         style: style,
+        selected: textFormatting && selection.isValid && !selection.isCollapsed
+            ? selection
+            : TextRange.empty,
+        formattedRuns: textFormatting
+            ? parseChatFormattedText(text, preserveMarkers: true)
+            : null,
         composing: withComposing && value.isComposingRangeValid
             ? value.composing
             : TextRange.empty);
@@ -788,62 +1009,93 @@ TextSpan _emojiSpans(
   String text, {
   TextStyle? style,
   TextRange composing = TextRange.empty,
+  TextRange selected = TextRange.empty,
+  List<ChatTextRun>? formattedRuns,
+  TextStyle? formattingStyle,
 }) {
   final effectiveStyle = DefaultTextStyle.of(context).style.merge(style);
   final size =
       ((effectiveStyle.fontSize ?? 14) * 1.35).clamp(18.0, 24.0).toDouble() *
           inlineEmojiScale;
   final spans = <InlineSpan>[];
-  var offset = 0;
-  while (offset < text.length) {
-    final id = _emojiIdAt(text, offset);
-    final inComposing = composing.isValid &&
-        offset >= composing.start &&
-        offset < composing.end;
-    final segmentStyle = inComposing
-        ? const TextStyle(decoration: TextDecoration.underline)
-        : null;
-    if (id != null) {
-      spans.add(WidgetSpan(
-        alignment: PlaceholderAlignment.middle,
-        style: segmentStyle,
-        child: Semantics(
-          label: id <= _emojiLabels.length ? _emojiLabels[id - 1] : 'אימוג׳י',
-          image: true,
-          child: ExcludeSemantics(
-            child: SizedBox.square(
-              dimension: size,
-              child: vividInlineEmojiArtwork(
-                id,
-                Image.network(
-                  '$_emojiOrigin${_imagePath(id)}',
-                  key: ValueKey<String>('inline-custom-emoji-$id'),
-                  width: size,
-                  height: size,
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) => Icon(
-                    Icons.broken_image_outlined,
-                    size: size,
-                    color: effectiveStyle.color,
-                  ),
-                ),
-              ),
+  void addRun(String runText, TextStyle? runStyle, int sourceOffset) {
+    var offset = 0;
+    while (offset < runText.length) {
+      final id = _emojiIdAt(runText, offset);
+      final sourcePosition = sourceOffset + offset;
+      final inComposing = composing.isValid &&
+          sourcePosition >= composing.start &&
+          sourcePosition < composing.end;
+      final inSelection = selected.isValid &&
+          sourcePosition >= selected.start &&
+          sourcePosition < selected.end;
+      final visibleStyle = inSelection && runStyle?.backgroundColor != null
+          ? runStyle!.copyWith(backgroundColor: Colors.transparent)
+          : runStyle;
+      final segmentStyle = inComposing
+          ? (visibleStyle ?? const TextStyle()).copyWith(
+              decoration: TextDecoration.combine([
+                if (visibleStyle?.decoration != null) visibleStyle!.decoration!,
+                TextDecoration.underline,
+              ]),
+            )
+          : visibleStyle;
+      if (id != null) {
+        spans.add(WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          style: segmentStyle,
+          child: Semantics(
+            label: id <= _emojiLabels.length ? _emojiLabels[id - 1] : 'אימוג׳י',
+            image: true,
+            child: ExcludeSemantics(
+              child: _chatArtworkBackground(
+                  segmentStyle,
+                  SizedBox.square(
+                    dimension: size,
+                    child: vividInlineEmojiArtwork(
+                      id,
+                      Image.network(
+                        '$_emojiOrigin${_imagePath(id)}',
+                        key: ValueKey<String>('inline-custom-emoji-$id'),
+                        width: size,
+                        height: size,
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => Icon(
+                          Icons.broken_image_outlined,
+                          size: size,
+                          color: effectiveStyle.color,
+                        ),
+                      ),
+                    ),
+                  )),
             ),
           ),
-        ),
-      ));
-      offset++;
-      continue;
+        ));
+        offset++;
+        continue;
+      }
+      final start = offset++;
+      while (offset < runText.length &&
+          _emojiIdAt(runText, offset) == null &&
+          sourceOffset + offset != composing.start &&
+          sourceOffset + offset != composing.end &&
+          sourceOffset + offset != selected.start &&
+          sourceOffset + offset != selected.end) {
+        offset++;
+      }
+      spans.add(TextSpan(
+          text: runText.substring(start, offset), style: segmentStyle));
     }
-    final start = offset++;
-    while (offset < text.length &&
-        _emojiIdAt(text, offset) == null &&
-        offset != composing.start &&
-        offset != composing.end) {
-      offset++;
+  }
+
+  if (formattedRuns == null) {
+    addRun(text, formattingStyle, 0);
+  } else {
+    var sourceOffset = 0;
+    for (final run in formattedRuns) {
+      addRun(run.text, _chatRunStyle(effectiveStyle, run), sourceOffset);
+      sourceOffset += run.text.length;
     }
-    spans.add(
-        TextSpan(text: text.substring(start, offset), style: segmentStyle));
   }
   return TextSpan(style: style, children: spans);
 }
@@ -859,6 +1111,7 @@ class InlineEmojiText extends StatelessWidget {
     this.maxLines,
     this.overflow,
     this.messageEmojis = false,
+    this.textFormatting = false,
   });
 
   final String text;
@@ -871,26 +1124,51 @@ class InlineEmojiText extends StatelessWidget {
   /// Color Unicode emoji in message bodies and enlarge 1–3 emoji alone.
   final bool messageEmojis;
 
+  /// Interpret the lightweight formatting supported by conversation composers.
+  /// Titles and other plain-text uses opt in explicitly.
+  final bool textFormatting;
+
   @override
   Widget build(BuildContext context) {
     final decoded = decodeInlineEmojiText(text);
+    final formattedRuns =
+        textFormatting ? parseChatFormattedText(decoded) : null;
+    final visibleText = formattedRuns?.map((run) => run.text).join() ?? decoded;
+    Widget fallback() {
+      if (formattedRuns == null && !_editorEmoji.hasMatch(decoded)) {
+        return Text(
+          text,
+          style: style,
+          textAlign: textAlign,
+          textDirection: textDirection,
+          maxLines: maxLines,
+          overflow: overflow,
+        );
+      }
+      return _MessageEmojiText.rich(
+        _emojiSpans(context, decoded,
+            style: style, formattedRuns: formattedRuns),
+        style: style,
+        textAlign: textAlign,
+        textDirection: textDirection,
+        maxLines: maxLines,
+        overflow: overflow,
+      );
+    }
+
     if (messageEmojis) {
       return FutureBuilder<Map<String, _MessageEmojiArtwork>>(
         future: _messageEmojiCatalog(DefaultAssetBundle.of(context)),
         builder: (context, snapshot) {
           final catalog = snapshot.data;
           if (catalog == null ||
-              !decoded.characters.any((character) =>
+              !visibleText.characters.any((character) =>
                   catalog.containsKey(_emojiCatalogKey(character)))) {
-            return InlineEmojiText(text,
-                style: style,
-                textAlign: textAlign,
-                textDirection: textDirection,
-                maxLines: maxLines,
-                overflow: overflow);
+            return fallback();
           }
           return _MessageEmojiText.rich(
-            _messageEmojiSpans(context, decoded, catalog, style),
+            _messageEmojiSpans(context, decoded, catalog, style,
+                formattedRuns: formattedRuns),
             style: style,
             textAlign: textAlign,
             textDirection: textDirection,
@@ -900,24 +1178,7 @@ class InlineEmojiText extends StatelessWidget {
         },
       );
     }
-    if (!_editorEmoji.hasMatch(decoded)) {
-      return Text(
-        text,
-        style: style,
-        textAlign: textAlign,
-        textDirection: textDirection,
-        maxLines: maxLines,
-        overflow: overflow,
-      );
-    }
-    return _MessageEmojiText.rich(
-      _emojiSpans(context, decoded, style: style),
-      style: style,
-      textAlign: textAlign,
-      textDirection: textDirection,
-      maxLines: maxLines,
-      overflow: overflow,
-    );
+    return fallback();
   }
 }
 

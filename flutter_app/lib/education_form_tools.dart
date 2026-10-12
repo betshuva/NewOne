@@ -53,6 +53,14 @@ bool educationFormMatches(Map<String, dynamic> form, String query) {
   return text.contains(query.trim().toLowerCase());
 }
 
+bool educationFormCanManage(Map<String, dynamic> form, {bool isAdmin = false}) {
+  final permission = form['canManage'];
+  if (permission is bool) {
+    return permission;
+  }
+  return isAdmin || form['my_role'] == 'admin';
+}
+
 Future<List<String>?> showEducationRecipientsDialog(
   BuildContext context, {
   required String api,
@@ -68,19 +76,22 @@ Future<List<String>?> showEducationRecipientsDialog(
     throw Exception(data['error'] ?? 'טעינת הנמענים נכשלה');
   final members = (data['members'] as List)
       .map((m) => Map<String, dynamic>.from(m))
-      .where(
-          (m) => m['id'] != data['viewer_id'] && !excludeIds.contains(m['id']))
+      .where((m) => !excludeIds.contains(m['id'].toString()))
       .toList();
   if (!context.mounted) return null;
   return showDialog<List<String>>(
       context: context,
-      builder: (_) =>
-          _RecipientDialog(members: members, initialIds: initialIds));
+      builder: (_) => _RecipientDialog(
+          members: members,
+          viewerId: data['viewer_id']?.toString(),
+          initialIds: initialIds));
 }
 
 class _RecipientDialog extends StatefulWidget {
-  const _RecipientDialog({required this.members, this.initialIds});
+  const _RecipientDialog(
+      {required this.members, this.viewerId, this.initialIds});
   final List<Map<String, dynamic>> members;
+  final String? viewerId;
   final List<String>? initialIds;
   @override
   State<_RecipientDialog> createState() => _RecipientDialogState();
@@ -90,6 +101,11 @@ class _RecipientDialogState extends State<_RecipientDialog> {
   late final Set<String> _selected = widget.initialIds?.toSet() ??
       widget.members.map((m) => m['id'].toString()).toSet();
   String _query = '', _notice = '';
+  String _memberName(Map<String, dynamic> member) {
+    final name = member['name']?.toString() ?? '';
+    return member['id'].toString() == widget.viewerId ? '$name (אני)' : name;
+  }
+
   Future<void> _import() async {
     try {
       final picked = await FilePicker.platform.pickFiles(
@@ -118,8 +134,8 @@ class _RecipientDialogState extends State<_RecipientDialog> {
   @override
   Widget build(BuildContext context) {
     final visible = widget.members
-        .where((m) =>
-            m['name'].toString().toLowerCase().contains(_query.toLowerCase()))
+        .where(
+            (m) => _memberName(m).toLowerCase().contains(_query.toLowerCase()))
         .toList();
     return AlertDialog(
       scrollable: true,
@@ -162,13 +178,13 @@ class _RecipientDialogState extends State<_RecipientDialog> {
                     : ListView(children: [
                         for (final m in visible)
                           CheckboxListTile(
-                              title: Text(m['name']?.toString() ?? ''),
-                              value: _selected.contains(m['id']),
+                              title: Text(_memberName(m)),
+                              value: _selected.contains(m['id'].toString()),
                               onChanged: (v) => setState(() {
                                     if (v == true) {
                                       _selected.add(m['id'].toString());
                                     } else {
-                                      _selected.remove(m['id']);
+                                      _selected.remove(m['id'].toString());
                                     }
                                   }))
                       ])),

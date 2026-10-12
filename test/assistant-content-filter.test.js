@@ -93,6 +93,7 @@ function apiHarness({ contactExists = true, recipientExists = true } = {}) {
   getPhoneSharingStatus: async () => ({ shared: false }),
   applyPhoneSharingChoices: async () => ({ shared: false }),
   phoneSharingChoices: () => ({}), lockFilterOwner: async () => BLOCKED,
+  requireFilterPin: async () => {},
   notifyPhoneSharingChange() {}, io: {}, onlineUsers: new Map(),
   prepareFilterHistoryChange() { throw new Error('Assistant settings must not hide or delete history'); },
   };

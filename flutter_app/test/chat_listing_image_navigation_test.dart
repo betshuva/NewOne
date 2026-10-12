@@ -426,7 +426,8 @@ void main() {
             find.byType(editing ? EditListingScreen : PostListingScreen));
         expect(server.sourceGate.isCompleted, isFalse);
         expect(server.uploads, isEmpty);
-        await _tapVisible(tester, find.text(editing ? 'שמור שינויים' : 'פרסם'));
+        await _tapVisible(
+            tester, find.text(editing ? 'שמור שינויים' : 'פרסם מודעה'));
         await _until(tester, () => !state.mounted);
         expect(server.listingWrites.length, 1);
         expect(server.imageWrites, isEmpty);
@@ -483,7 +484,7 @@ void main() {
     await http.runWithClient(() async {
       await _open(tester, server, false);
       final state = tester.state(find.byType(PostListingScreen));
-      await _tapVisible(tester, find.text('פרסם'));
+      await _tapVisible(tester, find.text('פרסם מודעה'));
       await _until(tester, () => !state.mounted);
       server.completeSource(rejected: true);
       await _until(
@@ -532,7 +533,7 @@ void main() {
     await http.runWithClient(() async {
       await _open(tester, server, false);
       final state = tester.state(find.byType(PostListingScreen));
-      await _tapVisible(tester, find.text('פרסם'));
+      await _tapVisible(tester, find.text('פרסם מודעה'));
       await _until(tester, () => !state.mounted);
       server.completeSource();
       await _until(tester, () => server.uploads.length == 1);

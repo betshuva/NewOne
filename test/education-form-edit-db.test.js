@@ -10,9 +10,9 @@ test('PostgreSQL archives answered surveys atomically in isolated temporary tabl
   await client.connect();
   try {
     await client.query('SET search_path TO pg_temp, public');
-    await client.query(`CREATE TEMP TABLE groups(id uuid,name text);
+    await client.query(`CREATE TEMP TABLE groups(id uuid,name text,send_permission text DEFAULT 'all');
       CREATE TEMP TABLE group_members(group_id uuid,user_id uuid,role text,status text);
-      CREATE TEMP TABLE education_forms(id uuid,group_id uuid,form_type text,title text,description text,
+      CREATE TEMP TABLE education_forms(id uuid,group_id uuid,created_by uuid,form_type text,title text,description text,
         file_url text,file_name text,questions jsonb,anonymous boolean,due_at timestamptz,updated_at timestamptz);
       CREATE TEMP TABLE education_form_responses(form_id uuid,user_id uuid,answers jsonb);
       CREATE TEMP TABLE education_form_recipients(form_id uuid,user_id uuid);
@@ -20,7 +20,7 @@ test('PostgreSQL archives answered surveys atomically in isolated temporary tabl
       CREATE TEMP TABLE education_form_revisions(id uuid DEFAULT gen_random_uuid(),form_id uuid,
         edited_by uuid,snapshot jsonb,responses jsonb,created_at timestamptz DEFAULT now());`);
     const [group, admin, formId, recipient] = Array.from({length:4}, () => require('crypto').randomUUID());
-    await client.query('INSERT INTO groups VALUES($1,$2)', [group,'בדיקה']);
+    await client.query('INSERT INTO groups(id,name) VALUES($1,$2)', [group,'בדיקה']);
     await client.query("INSERT INTO group_members VALUES($1,$2,'admin','member')", [group,admin]);
     await client.query(`INSERT INTO education_forms(id,group_id,form_type,title,questions,anonymous,updated_at)
       VALUES($1,$2,'survey','מקורי',$3,true,now())`, [formId,group,JSON.stringify([{text:'מתי?',options:['בוקר','ערב']}])]);

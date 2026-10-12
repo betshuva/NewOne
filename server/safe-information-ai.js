@@ -6,6 +6,7 @@ const { recordProviderCall } = require('./provider-usage-log');
 const { briefListingAnswer, formatListingAppraisal, listingReplyWithoutComparison } = require('./listing-answer-format');
 const { isListingAppraisal, permitsComparisonResearch, APPRAISAL_FORMAT,
   APPRAISAL_INSTRUCTIONS } = require('./listing-appraisal-policy');
+const { createAiPresentation } = require('./ai-presentation');
 
 const HALACHA_PATTERN = /(?:הלכה|הלכתי|מותר|אסור|כשר|כשרות|שבת|נידה|ברכה|תפילה|צום|מוקצה|ריבית\s+הלכתית|שעטנז|רבנות)/i;
 const EMERGENCY_PATTERN = /(?:לא\s*נושם|קושי\s*בנשימה|כאב\s*(?:חזק\s*)?בחזה|איבד\s*הכרה|דימום\s*חזק|שבץ|מנת\s*יתר|רוצה\s*להתאבד|אובדנ)/i;
@@ -86,6 +87,12 @@ const TEEN_SEARCH_DOMAINS = [
   'gov.il', 'boi.org.il', 'clalit.co.il', 'maccabi4u.co.il',
   'meuhedet.co.il', 'leumit.co.il', 'rail.co.il', 'egged.co.il', 'parks.org.il',
 ];
+const GENERAL_PRESENTATION_INSTRUCTIONS = `
+כאשר התשובה אינה עוסקת במודעות, עצב מידע כללי ב-Markdown ברור בעברית:
+פתח בתשובה ישירה. לפי הצורך חלק לכותרות קצרות עם ##, הדגש מילים חשובות בלבד ב-**bold**,
+והשתמש ברשימות תמציתיות כשיש כמה פרטים או צעדים. אל תוסיף כותרת או סיכום כשאין בהם צורך.
+מקורות ליד טענות חייבים להיות ציטוטי URL מאומתים של כלי החיפוש. אל תמציא ציטוט, מקור או קישור.
+`;
 const BLOCKED_SOURCE_DOMAINS = [
   'facebook.com', 'instagram.com', 'tiktok.com', 'twitter.com', 'x.com',
   'reddit.com', 'youtube.com', 'youtu.be', 't.me', 'telegram.org',
@@ -284,6 +291,7 @@ async function generateSafeInformationAnswer(options) {
         body: JSON.stringify({
           model,
           instructions: SAFE_INFORMATION_INSTRUCTIONS + (canSearch ? MARKETPLACE_INSTRUCTIONS : '') +
+            (!listingQuestion && !marketplaceChecked ? GENERAL_PRESENTATION_INSTRUCTIONS : '') +
             (appraisal ? APPRAISAL_INSTRUCTIONS : '') +
             (forceListing ? `\nשלוף כעת את המודעה המבוקשת באמצעות listing_id: ${missingListingId}.` : '') +
             (forceComparison ? '\nבצע עכשיו חיפוש השוואת מחירים עדכני לפי פרטי המודעה, לפני כתיבת המסקנה.' : '') + (options.isTeen ? `
@@ -450,7 +458,12 @@ async function generateSafeInformationAnswer(options) {
       .replace(/^\s*\*{0,2}(?:מקור(?:ות)?\s*[:：].*|(?:נתוני המודעות )?נבדקו? בתאריך[:：].*)$/gm, '')
       .replace(/\n{3,}/g, '\n\n').trim();
   }
-  return cleanText || 'לא נמצא מידע להצגה. אפשר לנסות חיפוש ממוקד יותר.';
+  const answer = cleanText || 'לא נמצא מידע להצגה. אפשר לנסות חיפוש ממוקד יותר.';
+  if (options.includePresentation === true && webSearched && !listingReply && cleanText) {
+    const aiPresentation = createAiPresentation(answer, checked.filter(Boolean));
+    if (aiPresentation) return { answer, aiPresentation };
+  }
+  return answer;
 }
 
 module.exports = {

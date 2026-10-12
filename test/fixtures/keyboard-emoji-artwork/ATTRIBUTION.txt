@@ -1,0 +1,4 @@
+Twemoji 17.0.3 artwork, jdecked/Twemoji contributors.
+https://github.com/jdecked/twemoji/tree/b6b55fef1e8636b540a6d016a4729ca8cdf2e60b
+Graphics: Creative Commons Attribution 4.0 International (CC-BY-4.0).
+Test fixture SVG files are unchanged; production rendering converts SVGs to PNG tiles.

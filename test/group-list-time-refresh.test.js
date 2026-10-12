@@ -16,7 +16,11 @@ test('HTTP group sends notify the sender so the conversation time refreshes', ()
   const route = server.slice(start, end);
   assert.match(route, /relay\(senderId, 'group:message', payload\)/);
   assert.match(route,
-    /const visible = await recipientMediaMessage\(pool, recipient\.id, recipientPayload\);[\s\S]*relay\(recipient\.id, 'group:message', visible\)/);
+    /const visible = await recipientMediaMessage\(pool, recipient\.id, recipientPayload\);/);
+  // Unicode messages recheck projection when deferred effects run, so a filter
+  // change after persistence cannot leak the original message to the recipient.
+  assert.match(route,
+    /relay\(recipient\.id, 'group:message', emojiClassification\s*\? await recipientMediaMessage\(pool, recipient\.id, recipientPayload\) : visible\)/);
 });
 
 test('group file bubbles display the persisted server timestamp', () => {

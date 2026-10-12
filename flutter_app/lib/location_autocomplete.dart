@@ -60,6 +60,7 @@ class LocationAutocompleteField extends StatefulWidget {
   final ValueChanged<String>? onSelected;
   final List<String> extraCities;
   final bool citiesOnly;
+  final Widget? suffixIcon;
 
   const LocationAutocompleteField({
     super.key,
@@ -71,6 +72,7 @@ class LocationAutocompleteField extends StatefulWidget {
     this.onSelected,
     this.extraCities = const [],
     this.citiesOnly = false,
+    this.suffixIcon,
   });
 
   @override
@@ -149,6 +151,7 @@ class _LocationAutocompleteFieldState extends State<LocationAutocompleteField> {
             labelText: widget.label,
             hintText: widget.hint,
             prefixIcon: const Icon(Icons.location_city_outlined),
+            suffixIcon: widget.suffixIcon,
             border: const OutlineInputBorder(),
           ),
         ),
