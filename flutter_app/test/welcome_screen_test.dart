@@ -27,7 +27,7 @@ void main() {
     expect(find.text('בוחרים את התוכן שרוצים לראות'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('welcome-feature-2')));
     await tester.pump();
-    expect(find.text('מהקהילה, קרוב אליכם'), findsOneWidget);
+    expect(find.text('קונים, מוכרים ומוסרים בקהילה'), findsOneWidget);
     expect(find.text('דוגמה להמחשה'), findsOneWidget);
     expect((await SharedPreferences.getInstance()).getKeys(), isEmpty);
     expect(continued, isEmpty);

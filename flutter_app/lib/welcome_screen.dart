@@ -61,6 +61,40 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
           Text(feature.description,
               textAlign: TextAlign.center,
               style: const TextStyle(color: _text, fontSize: 14, height: 1.6)),
+          if (_feature == 2) ...[
+            const SizedBox(height: 14),
+            LayoutBuilder(builder: (context, constraints) {
+              final columns = constraints.maxWidth >= 420 ? 3 : 2;
+              final width = (constraints.maxWidth - (columns - 1) * 8) / columns;
+              return Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final (icon, label) in _marketplaceCategories)
+                    Container(
+                      width: width,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFDCE7EE)),
+                      ),
+                      child: Column(children: [
+                        Icon(icon, size: 22, color: _primary),
+                        const SizedBox(height: 6),
+                        Text(label,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                color: _text,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600)),
+                      ]),
+                    ),
+                ],
+              );
+            }),
+          ],
           const SizedBox(height: 16),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -224,6 +258,15 @@ class _WelcomeFeature {
   final String example;
 }
 
+const _marketplaceCategories = [
+  (Icons.directions_car_outlined, 'רכבים'),
+  (Icons.home_outlined, 'נדל״ן'),
+  (Icons.kitchen_outlined, 'מוצרי חשמל'),
+  (Icons.chair_outlined, 'רהיטים'),
+  (Icons.devices_outlined, 'אלקטרוניקה'),
+  (Icons.menu_book_outlined, 'ספרים'),
+];
+
 const _features = [
   _WelcomeFeature(
       'שיחות',
@@ -241,7 +284,9 @@ const _features = [
   _WelcomeFeature(
       'מודעות',
       Icons.storefront_outlined,
-      'מהקהילה, קרוב אליכם',
-      'לוח למסירה ולמכירה עם חיפוש לפי קטגוריה, עיר, מחיר ומאפייני המוצר.',
-      'שולחן למסירה\nללא תשלום  •  באזור שלכם'),
+      'קונים, מוכרים ומוסרים בקהילה',
+      'רכבים, נדל״ן, מוצרי חשמל, רהיטים, אלקטרוניקה וספרים — ועוד קטגוריות. '
+          'חפשו לפי קטגוריה, אזור, מחיר ופרטי המודעה.',
+      'מחפשים לקנות  •  מפרסמים למכירה\n'
+          'מוסרים ללא תשלום  •  מוצאים קרוב לבית'),
 ];
