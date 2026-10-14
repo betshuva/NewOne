@@ -142,7 +142,18 @@ test('active senders create and manage only their own forms while admin, privacy
     assert.equal(form.canManage, true);
     assert.equal(form.isRecipient, true);
     assert.equal(form.canRespond, true);
-    assert.equal((await create(owner, { formType: 'signature', title: 'חתימה', fileUrl: 'own-file' })).code, 201);
+    const signatureForm = await create(owner, { formType: 'signature', title: 'חתימה', fileUrl: 'own-file' });
+    assert.equal(signatureForm.code, 201);
+    const signature = [{x:10,y:10},{x:20,y:20}];
+    await db.query(`INSERT INTO education_form_responses(form_id,user_id,response_status,signer_name,signature_data)
+      VALUES($1,$2,'approved','חותם',$3)`, [signatureForm.body.id,owner,JSON.stringify(signature)]);
+    const signedDetails = await call('GET','/api/education-forms/:id',owner,signatureForm.body.id);
+    assert.equal(signedDetails.code,200,JSON.stringify(signedDetails.body));
+    assert.deepEqual(signedDetails.body.participants.find(p=>p.id===owner).signature_data,signature);
+    const recipientDetails = await call('GET','/api/education-forms/:id',other,signatureForm.body.id);
+    assert.equal(recipientDetails.code,200);
+    assert.equal(recipientDetails.body.participants,null);
+
     assert.equal((await create(owner, { formType: 'approval', title: 'אישור' })).code, 201);
     assert(!pushes.some(push => push[0] === pending));
     assert(!pushes.some(push => push[0] === owner), 'Publishing includes the sender without notifying them of their own action');

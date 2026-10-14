@@ -27,7 +27,7 @@ class _ChatFileNameState extends State<ChatFileName> {
     final name = widget.filename ?? '';
     final path = Uri.tryParse(widget.url)?.path ?? '';
     final stickerName = RegExp(
-        r'^betshuva-sticker-[^/\\]+\.(png|gif|webp|jpe?g)$',
+        r'^betshuva-(?:shared-)?sticker-[^/\\]+\.(png|gif|webp|jpe?g)$',
         caseSensitive: false);
     return stickerName.hasMatch(name) ||
         path.contains('/expression-library/') ||

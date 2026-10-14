@@ -160,7 +160,7 @@ void main() {
 
   for (final isAdmin in [false, true]) {
     testWidgets(
-        'sending group members can open each separate form action (admin: $isAdmin)',
+        'sending group members can switch approval and signature in the unified form (admin: $isAdmin)',
         (tester) async {
       SharedPreferences.setMockInitialValues({});
       final group = <String, dynamic>{
@@ -196,7 +196,7 @@ void main() {
         await tester.tap(entry);
         await tester.pumpAndSettle();
         expect(find.byType(CreateEducationFormScreen), findsNothing);
-        for (final label in ['אישור', 'חתימה', 'סקר']) {
+        for (final label in ['אישור / חתימה', 'סקר']) {
           expect(find.text(label), findsOneWidget);
         }
         // Returning from the submenu must preserve the root attachment menu.
@@ -204,8 +204,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('העלאת קבצים'), findsOneWidget);
         for (final choice in [
-          ('אישור', 'approval', 'יצירת אישור'),
-          ('חתימה', 'signature', 'יצירת בקשת חתימה'),
+          ('אישור / חתימה', 'approval', 'יצירת אישור / חתימה'),
           ('סקר', 'survey', 'יצירת סקר'),
         ]) {
           await tester.tap(find.text('אישור, חתימה או סקר'));
@@ -218,11 +217,25 @@ void main() {
           expect(creator, findsOneWidget);
           final screen = tester.widget<CreateEducationFormScreen>(creator);
           expect(screen.initialType, choice.$2);
-          expect(screen.lockType, isTrue);
+          expect(screen.lockType, choice.$2 == 'survey');
+          expect(screen.approvalAndSignatureOnly, choice.$2 != 'survey');
           expect(find.text(choice.$3), findsOneWidget);
-          expect(find.byType(SegmentedButton<String>), findsNothing);
+          expect(find.byType(SegmentedButton<String>),
+              choice.$2 == 'survey' ? findsNothing : findsOneWidget);
           expect(find.text('צירוף מסמך לחתימה *'),
               choice.$2 == 'signature' ? findsOneWidget : findsNothing);
+          if (choice.$2 == 'approval') {
+            final selector = tester.widget<SegmentedButton<String>>(
+                find.byType(SegmentedButton<String>));
+            expect(selector.segments.map((segment) => segment.value),
+                ['approval', 'signature']);
+            await tester.tap(find.text('אישור וחתימה'));
+            await tester.pumpAndSettle();
+            expect(find.text('צירוף מסמך לחתימה *'), findsOneWidget);
+            await tester.tap(find.text('אישור בלבד'));
+            await tester.pumpAndSettle();
+            expect(find.text('צירוף מסמך לחתימה *'), findsNothing);
+          }
           if (choice.$2 == 'survey') {
             await tester.scrollUntilVisible(find.text('סקר אנונימי'), 150,
                 scrollable: find

@@ -149,6 +149,7 @@ class _ChatHarness {
   final bool removedArtwork;
   final bool splitCatalog;
   final List<Map<String, dynamic>> extraEmojiItems;
+  final List<Map<String, dynamic>> extraStickerItems;
   final bool adminInvites;
   final bool isGuide;
   final Future<http.Response> Function()? sendResponse;
@@ -174,6 +175,7 @@ class _ChatHarness {
       this.removedArtwork = false,
       this.splitCatalog = false,
       this.extraEmojiItems = const [],
+      this.extraStickerItems = const [],
       this.adminInvites = false,
       this.isGuide = false,
       this.sendResponse,
@@ -240,6 +242,10 @@ class _ChatHarness {
                 .replaceFirst('user-20260907', 'user-20261008-color');
           }
         }
+      }
+      if (extraStickerItems.isNotEmpty) {
+        final category = (catalog['categories'] as List).firstWhere((c) => c['id'] == 'user-stickers') as Map;
+        category['items'] = [...(category['items'] as List), ...extraStickerItems];
       }
       if (extraEmojiItems.isNotEmpty) {
         final emojiCategory = (catalog['categories'] as List)
@@ -646,6 +652,77 @@ TextSelection _logicalSelection(TextEditingController controller) {
 }
 
 void main() {
+  for (final isGroup in [false, true]) {
+    testWidgets('image menu saves a shared sticker with rights without sending it ($isGroup)', (tester) async {
+      final app = _ChatHarness(isGroup: isGroup, history: [{
+        'id': 'shared-source-photo', 'sender_id': 'emoji-test-recipient',
+        'recipient_id': 'emoji-test-user', 'sender_name': 'חבר',
+        'file_url': '/uploads/shared-source.png', 'file_name': 'source.png',
+        'file_type': 'image', 'message_status': 'sent',
+        'created_at': '2026-10-14T12:00:00Z',
+      }]);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        for (var i = 0; i < 8; i++) {
+          await tester.pump(const Duration(milliseconds: 100));
+          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+        }
+        await tester.tap(find.byTooltip('אפשרויות הודעה').first);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('שמור כמדבקה משותפת'));
+        await tester.pumpAndSettle();
+        final title = find.byWidgetPredicate((w) => w is TextField && w.decoration?.labelText == 'שם המדבקה');
+        await tester.enterText(title, 'שלום לכולם');
+        final save = find.widgetWithText(ElevatedButton, 'שמור מדבקה');
+        expect(tester.widget<ElevatedButton>(save).onPressed, isNull);
+        await tester.tap(find.byType(CheckboxListTile));
+        await tester.pump();
+        await tester.tap(save);
+        for (var i = 0; i < 10; i++) {
+          await tester.pump(const Duration(milliseconds: 100));
+          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+        }
+        expect(app.uploads, hasLength(1));
+        final body = latin1.decode(app.uploads.single.bodyBytes);
+        expect(body, contains('name="sharedSticker"'));
+        expect(body, contains('name="rightsConfirmed"'));
+        expect(app.sentHttpMessages, isEmpty);
+        expect(app.sentSocketMessages, isEmpty);
+        expect(find.text('המדבקה נשמרה בספרייה המשותפת'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        await app.dispose(tester);
+      }, () => app.client);
+    });
+  }
+
+  for (final isGroup in [false, true]) {
+    testWidgets('shared user sticker sends from the library without uploading ($isGroup)', (tester) async {
+      final app = _ChatHarness(isGroup: isGroup, splitCatalog: true, extraStickerItems: [
+        {'id': 'shared-sticker-one', 'label': 'מדבקה משותפת', 'url': '/uploads/shared-sticker.png',
+          'sharedSticker': {'id': 'shared-one', 'title': 'מדבקה משותפת',
+            'preview_url': '/uploads/shared-sticker.png', 'file_name': 'betshuva-shared-sticker-one.png'}}
+      ]);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        await _openPicker(tester, stickers: true, count: 151);
+        await _enterSearch(tester, 'מדבקה משותפת');
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('expression-image-https://betshuva.com/uploads/shared-sticker.png')));
+        for (var i = 0; i < 8; i++) {
+          await tester.pump(const Duration(milliseconds: 100));
+          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+        }
+        expect(app.requests.where((r) => r.url.path.endsWith('/upload')), isEmpty);
+        final sent = app.requests.where((r) => r.method == 'POST' && r.url.path.endsWith('/messages')).single;
+        expect(jsonDecode(sent.body)['fileName'], 'betshuva-shared-sticker-one.png');
+        expect(jsonDecode(sent.body)['fileType'], 'image');
+        expect(app.requests.any((r) => r.url.path.endsWith('/gifs/shared-one/use')), isTrue);
+        expect(tester.takeException(), isNull);
+        await app.dispose(tester);
+      }, () => app.client);
+    });
+  }
+
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
     if (!kIsWeb) {

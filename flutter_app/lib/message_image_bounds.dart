@@ -6,6 +6,7 @@ import 'package:flutter/widgets.dart';
 /// separate text renderer and never pass through these bounds.
 Size chatImageMaxSize({bool group = false, String? fileName}) {
   final name = (fileName ?? '').toLowerCase();
+  if (name.startsWith('betshuva-shared-sticker-')) return const Size(160, 160);
   final sticker = name.startsWith('betshuva-sticker-') ||
       name.startsWith('sticker_') ||
       name.startsWith('betshuva_');

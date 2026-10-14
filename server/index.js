@@ -1,3 +1,4 @@
+const sharedStickers = require('./shared-stickers');
 const { SCHEMA: EDUCATION_EDIT_SCHEMA, registerEducationFormEditing } = require('./education-form-edit');
 const { SCHEMA: EDUCATION_SURVEY_SCHEMA, registerEducationSurveyManagement } = require('./education-survey-management');
 const { normalizeQuestionSelection, normalizeSurveyAnswers } = require('./education-survey-questions');
@@ -134,6 +135,7 @@ const { FILTER_MEDIA_SCHEMA, lockFilterOwner, prepareFilterHistoryChange,
   finishFilterHistoryChange, projectFilteredHistory, projectFilterMediaLibrary, projectOwnScans, registerFilterHistoryRoutes } = require('./filter-media-history');
 const { registerMessageReactions, REACTION_EMOJI_SCHEMA, REACTION_READ_SCHEMA, projectReactionConversations,
   reactionUnreadCounts, markReactionsRead } = require('./message-reactions');
+const { registerUnreadMediaPrefetch } = require('./unread-media-prefetch');
 const { CONVERSATION_SCHEMA, messageAfterConversationClear, personalMessageVisible, registerConversationHistory } = require('./conversation-history');
 const { RELEASE_FROM_SQL, RELEASE_WHERE_SQL, releaseLocalMediaBatch } = require('./local-media-release');
 const { createReceivedMediaService, personalizeReceivedMessages,
@@ -3378,6 +3380,7 @@ async function migrateDatabase() {
         uses_count INTEGER NOT NULL DEFAULT 0,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       )`);
+    await pool.query(`ALTER TABLE shared_gifs ADD COLUMN IF NOT EXISTS is_sticker BOOLEAN NOT NULL DEFAULT FALSE`);
     await pool.query(`CREATE INDEX IF NOT EXISTS shared_gifs_created_idx
       ON shared_gifs(created_at DESC) WHERE status='active'`);
     // Legacy rows predate moderation_status. Trust only files that were already
@@ -5766,6 +5769,9 @@ app.post('/api/contacts/match', authWithDbCheck, searchRateLimit, async (req, re
       { knownPhones: normalized }));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+registerUnreadMediaPrefetch(app, { auth, getPool, projectFilteredHistory,
+  contentAllowedByFilter, teenContactAllowed });
 
 // ── Messages: unread counts per sender ───────────────────────────
 app.get('/api/messages/unread', auth, async (req, res) => {
@@ -8801,7 +8807,7 @@ app.get('/api/expressions/emoji/:id', async (req, res) => {
 app.get('/api/expressions/catalog', auth, async (_req, res) => {
   try {
     res.set('Cache-Control', 'no-store');
-    res.json(await getExpressionCatalog());
+    res.json(await sharedStickers.appendSharedStickers(await getPool(), await getExpressionCatalog()));
   } catch (error) {
     console.error('expression catalog:', error.message);
     res.status(500).json({ error: 'טעינת ספריית הביטויים נכשלה' });
@@ -8813,7 +8819,7 @@ app.get('/api/gifs/search', auth, searchRateLimit, async (req, res) => {
   try {
     const pool = await getPool();
     const params = [];
-    let where = `sg.status='active' AND sf.moderation_status='approved'`;
+    let where = `sg.status='active' AND sg.is_sticker=FALSE AND sf.moderation_status='approved'`;
     if (query) {
       params.push(`%${query}%`);
       where += ` AND (sg.title ILIKE $1 OR EXISTS
@@ -8962,11 +8968,22 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
       error: 'שיתוף בספרייה דורש GIF ואישור זכויות מפורש',
     });
 
+  let sharedSticker;
+  try { if (req.body.sharedSticker === 'true') sharedSticker = sharedStickers.sharedStickerDetails(req.body, allowed.dbType); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
+
   // Size check
   const maxBytes = recordedAudio ? MAX_RECORDING_INPUT_BYTES : allowed.maxMB * 1024 * 1024;
   if (file.size > maxBytes)
     return res.status(400).json({ error: `גודל קובץ מקסימלי: ${maxBytes / 1048576}MB` });
   if (allowed.dbType !== 'video' && !file.buffer) file.buffer = await fs.readFile(file.path);
+  if (sharedSticker) {
+    try {
+      const resized = await sharedStickers.resizeSharedSticker(file.buffer);
+      file.buffer = resized.bytes; file.size = resized.bytes.length;
+      file.mimetype = resized.mime; file.originalname = resized.name;
+    } catch (error) { return res.status(422).json({ error: 'לא ניתן להכין את המדבקה: ' + error.message }); }
+  }
   const moderationVersion = allowed.dbType === 'video' ? VIDEO_SCAN_VERSION
     : allowed.dbType === 'image' && isPotentiallyAnimatedImage(file.buffer)
       ? ANIMATED_SCAN_VERSION : MODERATION_CACHE_VERSION;
@@ -9130,6 +9147,10 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
     unregisteredBlob = null;
     if (reused) await observeAudit(pool, { kind: 'media_reused', status: 'completed',
       targetType: 'file', targetId: reused.id, details: { cacheHit: true, storedFileId: reused.id } });
+    if (sharedSticker) await pool.query(`INSERT INTO shared_gifs(stored_file_id,creator_id,title,tags,is_sticker)
+      VALUES($1,$2,$3,$4,TRUE) ON CONFLICT(stored_file_id) DO UPDATE SET title=$3,tags=$4,is_sticker=TRUE`,
+      [storedInsert.rows[0].id,req.user.id,sharedSticker.title,sharedSticker.tags]);
+
     const scanTracking = { storedFileId: storedInsert.rows[0].id,
       userId: req.user.id, workflow: 'upload', attempt: 1 };
 
@@ -9154,7 +9175,7 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
         if (scanResult.blockedBy === 'sender_filter') delete scanResult.blockedBy;
       }
     } else if (allowed.dbType === 'image' && !scanBotUpload &&
-        (req.body.groupId || req.body.toUserId) &&
+        (req.body.groupId || req.body.toUserId || sharedSticker) &&
         isPotentiallyAnimatedImage(file.buffer))
       // Animated chat attachments can take longer than the installed client's
       // upload timeout. Persist their destination and let the existing durable
@@ -10283,6 +10304,7 @@ app.get('/api/education-forms/:id', auth, async (req, res) => {
                 r.response_status,
                 CASE WHEN $2 THEN NULL ELSE r.submitted_at END AS submitted_at,
                 CASE WHEN $2 THEN NULL ELSE r.signer_name END AS signer_name,
+                CASE WHEN $2 THEN NULL ELSE r.signature_data END AS signature_data,
                 change_request.status AS change_request_status,
                 CASE WHEN $2 THEN NULL ELSE r.answers END AS answers,
                 (SELECT max(sent_at) FROM education_form_reminders rem

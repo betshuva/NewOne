@@ -6,6 +6,10 @@ import 'video_thumbnail_stub.dart'
     if (dart.library.io) 'video_thumbnail_native.dart'
     if (dart.library.html) 'video_thumbnail_web.dart' as platform;
 
+/// Reuses the same frame cache as the visible video card; never starts playback.
+Future<Uint8List?> warmVideoThumbnail(String url) =>
+    platform.loadVideoThumbnail(url);
+
 /// A still frame; the parent owns taps and opens the full video player.
 class VideoThumbnail extends StatefulWidget {
   const VideoThumbnail({

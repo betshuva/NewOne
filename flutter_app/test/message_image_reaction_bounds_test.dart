@@ -271,6 +271,17 @@ void main() {
   });
 
   for (final group in [false, true]) {
+    testWidgets('shared sticker stays at 160 pixels ($group)', (tester) async {
+      final cap = chatImageMaxSize(group: group, fileName: 'betshuva-shared-sticker-one.gif');
+      expect(cap, const Size(160, 160));
+      final harness = _Harness(reactionImageFixtures['square']!, cap);
+      await harness.show(tester);
+      await _expectCornerAndMenu(tester, harness, const Size(160, 160), const Size(200, 200));
+      await harness.dispose(tester);
+    });
+  }
+
+  for (final group in [false, true]) {
     testWidgets(
         'uploaded sticker remains compact in ${group ? 'group' : 'private'} chat',
         (tester) async {

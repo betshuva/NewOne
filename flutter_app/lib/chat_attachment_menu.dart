@@ -251,11 +251,8 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
                                 allowed: widget.imagesAllowed),
                         ] else if (_section == 'forms') ...[
                           _item(
-                              'אישור', Icons.fact_check_outlined, Colors.indigo,
+                              'אישור / חתימה', Icons.fact_check_outlined, Colors.indigo,
                               action: ChatAttachmentAction.approvalForm,
-                              allowed: widget.textAllowed),
-                          _item('חתימה', Icons.draw_outlined, Colors.indigo,
-                              action: ChatAttachmentAction.signatureForm,
                               allowed: widget.textAllowed),
                           _item('סקר', Icons.poll_outlined, Colors.indigo,
                               action: ChatAttachmentAction.surveyForm,

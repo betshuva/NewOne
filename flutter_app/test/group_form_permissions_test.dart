@@ -132,6 +132,82 @@ Future<void> _withGroup(WidgetTester tester,
 }
 
 void main() {
+  for (final type in ['approval', 'signature', 'survey', 'pending', 'anonymous']) {
+    testWidgets('$type PDF uses fresh results and sends only to self',
+        (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      var loads = 0;
+      http.Request? upload, sent;
+      await http.runWithClient(() async {
+        await _open(
+            tester,
+            const EducationFormDetailsScreen(
+                token: 'token', formId: 'own-form', isAdmin: false));
+        final button = find.text('שלח דוח PDF להודעות לעצמי');
+        await _reveal(tester, button);
+        await tester.runAsync(() async {
+          await tester.tap(button);
+          for (var attempt = 0; attempt < 100 && sent == null; attempt++) {
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+          }
+        });
+        await tester.pumpAndSettle();
+        expect(loads, greaterThanOrEqualTo(2));
+        expect(upload, isNotNull);
+        expect(latin1.decode(upload!.bodyBytes), contains('%PDF-'));
+        expect(latin1.decode(upload!.bodyBytes), contains('self-user'));
+        if (type == 'pending') {
+          expect(sent, isNull);
+          expect(find.text('הדוח יישלח להודעות לעצמי לאחר הסריקה'), findsOneWidget);
+        } else {
+          expect(jsonDecode(sent!.body)['toUserId'], 'self-user');
+          expect(jsonDecode(sent!.body)['fileType'], 'document');
+          expect(find.text('דוח ה־PDF נשלח להודעות לעצמי'), findsOneWidget);
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+          () => MockClient((request) async {
+                if (request.url.path.endsWith('/chat-design')) return _json({});
+                if (request.url.path.endsWith('/education-forms/own-form')) {
+                  loads++;
+                  return _json({
+                    'form': {..._form, 'form_type': ['pending', 'anonymous'].contains(type) ? 'survey' : type, 'anonymous': type == 'anonymous'},
+                    'participants': [
+                      {
+                        'id': 'voter',
+                        'name': 'משתתף',
+                        'response_status': 'approved',
+                        'signer_name': 'משתתף',
+                        'signature_data': [
+                          {'x': 10, 'y': 10},
+                          {'x': 20, 'y': 20}
+                        ],
+                        'answers': {'0': 'בוקר'}
+                      }
+                    ],
+                    'results': [
+                      {
+                        'answers': {'0': 'בוקר'}
+                      }
+                    ]
+                  });
+                }
+                if (request.url.path.endsWith('/profile'))
+                  return _json({'id': 'self-user'});
+                if (request.url.path.endsWith('/upload')) {
+                  upload = request;
+                  return _json(
+                      {'status': type == 'pending' ? 'pending' : 'approved', 'url': '/uploads/report.pdf'});
+                }
+                if (request.url.path.endsWith('/messages')) {
+                  sent = request;
+                  return _json({'id': 'sent'});
+                }
+                return _json({});
+              }));
+    });
+  }
+
   setUpAll(() async {
     if (kIsWeb) return;
     final font = FontLoader('NotoSansHebrew')
@@ -351,12 +427,21 @@ void main() {
           await gesture.moveBy(const Offset(22, 0));
           await gesture.moveBy(const Offset(15, 12));
           await gesture.moveBy(const Offset(15, -8));
+          final canvasRect = tester.getRect(canvas);
+          await gesture.moveTo(canvasRect.bottomRight + const Offset(30, 30));
+          await gesture.moveTo(canvasRect.center);
+          await gesture.moveBy(const Offset(12, 5));
           await gesture.up();
           await tester.pumpAndSettle();
           await _tap(tester, find.text('אני מאשר/ת וחותם/ת'));
           expect(jsonDecode(submitted!.body)['signerName'], 'השם שלי');
-          expect(jsonDecode(submitted!.body)['signatureData'],
-              contains(isA<Map>()));
+          final points = jsonDecode(submitted!.body)['signatureData'] as List;
+          expect(points, contains(isA<Map>()));
+          expect(points, contains(null));
+          for (final point in points.whereType<Map>()) {
+            expect(point['x'], inInclusiveRange(0, canvasRect.width));
+            expect(point['y'], inInclusiveRange(0, canvasRect.height));
+          }
         }
         expect(submitted!.url.path, endsWith('/own-form/respond'));
         expect(jsonDecode(submitted!.body)['expectedUpdatedAt'],

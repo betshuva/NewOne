@@ -1,6 +1,7 @@
 import 'settings_presentation.dart';
 import 'remote_card_notice.dart';
 import 'education_form_tools.dart';
+import 'education_form_pdf.dart';
 import 'education_form_message_card.dart';
 import 'simple_survey_editor.dart';
 import 'survey_answers.dart';
@@ -90,8 +91,6 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:pdf/pdf.dart' hide PdfDocument;
-import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:video_player/video_player.dart';
@@ -100,6 +99,7 @@ import 'pdf_document_actions.dart';
 import 'hebrew_date.dart';
 import 'media_cache.dart';
 import 'persistent_media_loader.dart';
+import 'media_prefetch_queue.dart';
 import 'media_delete_dialog.dart';
 import 'media_rename.dart';
 import 'chat_file_name.dart';
@@ -2084,7 +2084,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.78';
+const kVersion = '1.3.79';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -2627,6 +2627,8 @@ void _showImageBatchSummary(
 String _absoluteMediaUrl(String url) =>
     Uri.parse(url).hasScheme ? url : Uri.parse(kServer).resolve(url).toString();
 
+final _mediaPrefetch = MediaPrefetchQueue();
+
 final _mediaLoader = PersistentMediaLoader(
   read: readMediaCache,
   write: writeMediaCache,
@@ -2924,11 +2926,12 @@ Future<void> _persistRecentImageUrls(
     urls.add(fileUrl);
     if (urls.length >= 20) break;
   }
-  for (final url in urls) {
-    try {
-      await _loadPersistentMedia(url);
-    } catch (_) {}
-  }
+  await Future.wait(urls.map((url) => _mediaPrefetch.schedule(
+      _absoluteMediaUrl(url), () async {
+        if (await _loadPersistentMedia(url) == null) {
+          throw const FormatException('Media warmup failed');
+        }
+      }, priority: true)));
 }
 
 String _groupMessagesCacheKey(Object? userId, Object? groupId) =>
@@ -8240,6 +8243,10 @@ class _MainShellContentState extends State<_MainShellContent> {
   Timer? _usersRefreshTimer;
   Map<String, int> _unreadCounts = {}; // userId → count of unread incoming msgs
   Map<String, int> _groupUnreadCounts = {}; // groupId → unread count
+  Timer? _unreadMediaTimer;
+  DateTime? _unreadMediaRequestedAt;
+  bool _unreadMediaRequestRunning = false;
+  int _unreadMediaEpoch = 0;
   int _unreadLoadSerial = 0;
   int _groupUnreadLoadSerial = 0;
   final _reactionEvents = MessageReactionEventDeduplicator();
@@ -8307,6 +8314,9 @@ class _MainShellContentState extends State<_MainShellContent> {
       _accountId == null ? null : 'cache_users_$_accountId';
 
   Future<void> _clearLocalAccountState() async {
+    _unreadMediaEpoch++;
+    _unreadMediaTimer?.cancel();
+    _mediaPrefetch.clear();
     await _mediaLoader.clear();
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
       try {
@@ -8636,6 +8646,9 @@ class _MainShellContentState extends State<_MainShellContent> {
     _conversationChangesSubscription.cancel();
     _shareChannel.setMethodCallHandler(null);
     _usersRefreshTimer?.cancel();
+    _unreadMediaTimer?.cancel();
+    _unreadMediaEpoch++;
+    _mediaPrefetch.clear();
     for (final timer in _groupTypingTimers.values) {
       timer.cancel();
     }
@@ -9003,6 +9016,60 @@ class _MainShellContentState extends State<_MainShellContent> {
     } catch (_) {}
   }
 
+  void _scheduleUnreadMediaPrefetch() {
+    if (!mounted || _unreadMediaRequestRunning ||
+        ![..._unreadCounts.values, ..._groupUnreadCounts.values].any((n) => n > 0)) return;
+    if (_unreadMediaRequestedAt != null &&
+        DateTime.now().difference(_unreadMediaRequestedAt!) < const Duration(seconds: 30)) return;
+    _unreadMediaTimer?.cancel();
+    _unreadMediaTimer = Timer(const Duration(milliseconds: 700), _prefetchUnreadMedia);
+  }
+
+  Future<void> _prefetchUnreadMedia() async {
+    if (!mounted || _unreadMediaRequestRunning) return;
+    _unreadMediaRequestRunning = true;
+    _unreadMediaRequestedAt = DateTime.now();
+    final epoch = _unreadMediaEpoch;
+    try {
+      final response = await http.get(Uri.parse('$kApi/media/unread-prefetch'),
+          headers: {'Authorization': 'Bearer ${widget.token}'})
+          .timeout(const Duration(seconds: 15));
+      if (!mounted || epoch != _unreadMediaEpoch || response.statusCode != 200) return;
+      final body = jsonDecode(response.body);
+      if (body is! Map || body['items'] is! List) return;
+      var budget = 10 * 1024 * 1024;
+      for (final item in (body['items'] as List).take(20)) {
+        if (item is! Map || item['url'] is! String || item['bytes'] is! num) continue;
+        final size = (item['bytes'] as num).toInt();
+        final url = _absoluteMediaUrl(item['url'] as String);
+        final uri = Uri.tryParse(url);
+        if (uri == null || !const ['http', 'https'].contains(uri.scheme) ||
+            uri.userInfo.isNotEmpty || uri.origin != kServerUri.origin ||
+            size <= 0 || size > 2 * 1024 * 1024 || size > budget ||
+            !const ['image', 'video'].contains(item['type'])) continue;
+        budget -= size;
+        _mediaPrefetch.schedule(url, () async {
+          if (!mounted || epoch != _unreadMediaEpoch) return;
+          if (item['type'] == 'video') {
+            if (await warmVideoThumbnail(url) == null) {
+              throw const FormatException('Video warmup failed');
+            }
+          } else {
+            final bytes = await _loadPersistentMedia(url);
+            if (bytes == null) throw const FormatException('Image warmup failed');
+            if (mounted && epoch == _unreadMediaEpoch) {
+              await precacheImage(MemoryImage(bytes), context, onError: (_, __) {});
+            }
+          }
+        }).ignore();
+      }
+    } catch (_) {
+      // Opening the app and reading messages never depend on background warmup.
+    } finally {
+      _unreadMediaRequestRunning = false;
+    }
+  }
+
   Future<void> _loadUnreadCounts() async {
     final serial = ++_unreadLoadSerial;
     try {
@@ -9014,6 +9081,7 @@ class _MainShellContentState extends State<_MainShellContent> {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         setState(() => _unreadCounts = data.map((k, v) => MapEntry(
             k, v is num ? v.toInt() : int.tryParse(v.toString()) ?? 0)));
+        _scheduleUnreadMediaPrefetch();
       }
     } catch (_) {}
   }
@@ -9031,6 +9099,7 @@ class _MainShellContentState extends State<_MainShellContent> {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         setState(() => _groupUnreadCounts = data.map((k, v) => MapEntry(
             k, v is num ? v.toInt() : int.tryParse(v.toString()) ?? 0)));
+        _scheduleUnreadMediaPrefetch();
       }
     } catch (_) {}
   }
@@ -9428,6 +9497,10 @@ class _MainShellContentState extends State<_MainShellContent> {
 
     // אדמין מחק את המשתמש בזמן שהוא מחובר
     _socket!.on('filter:changed', (data) {
+      _unreadMediaEpoch++;
+      _unreadMediaRequestedAt = null;
+      _mediaPrefetch.clear();
+      _scheduleUnreadMediaPrefetch();
       receivingFilterChanges.add(widget.token);
       if (data is Map && data['scope'] == 'general') {
         _profilePicturesRevision++;
@@ -9507,6 +9580,7 @@ class _MainShellContentState extends State<_MainShellContent> {
       if (fromId == null || fromId == myId || fromId == kScanBotId) return;
       setState(() => _unreadCounts[fromId] = (_unreadCounts[fromId] ?? 0) + 1);
       _loadUsers();
+      _scheduleUnreadMediaPrefetch();
     });
     _socket!.on('chat:typing', (data) {
       if (!mounted) return;
@@ -9526,6 +9600,7 @@ class _MainShellContentState extends State<_MainShellContent> {
       if (_desktopGroup?['id'] == groupId) return;
       setState(() =>
           _groupUnreadCounts[groupId] = (_groupUnreadCounts[groupId] ?? 0) + 1);
+      _scheduleUnreadMediaPrefetch();
     });
     _socket!.on('group:typing', (data) {
       if (!mounted) return;
@@ -26464,6 +26539,15 @@ class _ChatScreenState extends State<ChatScreen>
               _addChatImageToListing(context, widget.token, msg, widget.me);
             },
           ),
+        if (_canSaveSharedSticker(msg))
+          CompactMessageMenuItem(
+            leading: const Icon(Icons.add_reaction_outlined, color: kPrimary),
+            title: const Text('שמור כמדבקה משותפת'),
+            onTap: () {
+              Navigator.pop(context);
+              _saveChatSharedSticker(context, widget.token, msg);
+            },
+          ),
         if (msg['fileType'] == 'image' && msg['fileUrl'] != null)
           CompactMessageMenuItem(
             leading: const Icon(Icons.copy_outlined, color: kPrimary),
@@ -33917,57 +34001,89 @@ Future<void> _showExpressionPicker(
       ),
     );
 
+bool _canSaveSharedSticker(Map<String, dynamic> message) =>
+    message['fileType'] == 'image' &&
+    message['fileUrl'] is String && (message['fileUrl'] as String).isNotEmpty &&
+    message['isDeleted'] != true && message['filterHidden'] != true &&
+    message['outboxId'] == null &&
+    !const ['uploading', 'sending', 'pending_scan', 'rejected_scan',
+      'blocked_content', 'failed', 'stopped_scan'].contains(message['status']);
+
+Future<void> _saveChatSharedSticker(BuildContext context, String token,
+    Map<String, dynamic> message) async {
+  final details = await _requestSharedGifDetails(context, sticker: true);
+  if (details == null || !context.mounted) return;
+  try {
+    final bytes = await _loadPersistentMedia(message['fileUrl'].toString());
+    if (bytes == null || bytes.isEmpty) throw Exception('התמונה אינה זמינה');
+    final name = message['fileName']?.toString() ?? 'sticker-source.png';
+    final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
+      ..headers['Authorization'] = 'Bearer $token'
+      ..fields.addAll({'sharedSticker': 'true', 'rightsConfirmed': 'true',
+        'sharedStickerTitle': details['title']!, 'sharedStickerTags': details['tags']!})
+      ..files.add(http.MultipartFile.fromBytes('file', bytes, filename: name,
+        contentType: _mimeFromFileName(name)));
+    final response = await _sendMediaUpload(request);
+    final result = jsonDecode(await response.stream.bytesToString()) as Map<String, dynamic>;
+    if (response.statusCode != 200 || result['status'] == 'rejected') {
+      throw Exception(result['error'] ?? result['reason'] ?? 'שמירת המדבקה נכשלה');
+    }
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
+      result['status'] == 'pending' ? 'המדבקה תופיע בספרייה לאחר הסריקה' : 'המדבקה נשמרה בספרייה המשותפת')));
+  } catch (error) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(error.toString().replaceFirst('Exception: ', ''))));
+  }
+}
+
 Future<Map<String, String>?> _requestSharedGifDetails(
-    BuildContext context) async {
-  final title = TextEditingController();
-  final tags = TextEditingController();
-  var rightsConfirmed = false;
-  final result = await showDialog<Map<String, String>>(
-    context: context,
-    builder: (dialogContext) => StatefulBuilder(
-      builder: (context, setDialogState) => AlertDialog(
-        title: const Text('הוספת GIF לספרייה המשותפת'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(
-              controller: title,
-              onChanged: (_) => setDialogState(() {}),
-              decoration: const InputDecoration(labelText: 'שם ה-GIF')),
-          TextField(
-              controller: tags,
-              decoration: const InputDecoration(
-                  labelText: 'תגיות לחיפוש, מופרדות בפסיקים')),
-          CheckboxListTile(
-            contentPadding: EdgeInsets.zero,
-            value: rightsConfirmed,
-            onChanged: (value) =>
-                setDialogState(() => rightsConfirmed = value == true),
-            title: const Text(
-                'אני מאשר/ת שיש לי זכות לשתף את הקובץ עם כל המשתמשים',
-                style: TextStyle(fontSize: 13)),
-          ),
-          const Text('ה-GIF יפורסם רק לאחר סריקת כל הפריימים.',
-              style: TextStyle(fontSize: 12, color: kSubtext)),
-        ]),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('ביטול')),
-          ElevatedButton(
-            onPressed: rightsConfirmed && title.text.trim().isNotEmpty
-                ? () => Navigator.pop(dialogContext, {
-                      'title': title.text.trim(),
-                      'tags': tags.text.trim(),
-                    })
-                : null,
-            child: const Text('בחר GIF והעלה'),
-          ),
-        ],
-      ),
-    ),
+    BuildContext context, {bool sticker = false}) =>
+    showDialog<Map<String, String>>(
+      context: context,
+      builder: (_) => _SharedExpressionDetailsDialog(sticker: sticker),
+    );
+
+class _SharedExpressionDetailsDialog extends StatefulWidget {
+  const _SharedExpressionDetailsDialog({required this.sticker});
+  final bool sticker;
+  @override
+  State<_SharedExpressionDetailsDialog> createState() => _SharedExpressionDetailsDialogState();
+}
+
+class _SharedExpressionDetailsDialogState extends State<_SharedExpressionDetailsDialog> {
+  final _title = TextEditingController();
+  final _tags = TextEditingController();
+  bool _rightsConfirmed = false;
+  @override
+  void dispose() {
+    _title.dispose();
+    _tags.dispose();
+    super.dispose();
+  }
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text(widget.sticker ? 'שמירה כמדבקה משותפת' : 'הוספת GIF לספרייה המשותפת'),
+    content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+      TextField(controller: _title, maxLength: 80,
+        onChanged: (_) => setState(() {}),
+        decoration: InputDecoration(labelText: widget.sticker ? 'שם המדבקה' : 'שם ה-GIF')),
+      TextField(controller: _tags,
+        decoration: const InputDecoration(labelText: 'תגיות לחיפוש, מופרדות בפסיקים')),
+      CheckboxListTile(contentPadding: EdgeInsets.zero,
+        value: _rightsConfirmed,
+        onChanged: (value) => setState(() => _rightsConfirmed = value == true),
+        title: const Text('אני מאשר/ת שיש לי זכות לשתף את הקובץ עם כל המשתמשים',
+          style: TextStyle(fontSize: 13))),
+      Text(widget.sticker ? 'המדבקה תהיה זמינה לכולם לאחר סינון, בגודל קטן. האנימציה תישמר.' : 'ה-GIF יפורסם רק לאחר סינון.',
+        style: const TextStyle(fontSize: 12, color: kSubtext)),
+    ])),
+    actions: [
+      TextButton(onPressed: () => Navigator.pop(context), child: const Text('ביטול')),
+      ElevatedButton(onPressed: _rightsConfirmed && _title.text.trim().isNotEmpty
+        ? () => Navigator.pop(context, {'title': _title.text.trim(), 'tags': _tags.text.trim()}) : null,
+        child: Text(widget.sticker ? 'שמור מדבקה' : 'בחר GIF והעלה')),
+    ],
   );
-  title.dispose();
-  tags.dispose();
-  return result;
 }
 
 class _ExpressionPickerSheet extends StatefulWidget {
@@ -34348,6 +34464,10 @@ class _RemoteExpressionGrid extends StatelessWidget {
               final label = item['label']?.toString() ?? '';
               final choicePrefix =
                   inlineEmoji ? _remoteExpressionPrefix : _remoteStickerPrefix;
+              final sharedSticker = item['sharedSticker'];
+              final choice = !inlineEmoji && sharedSticker is Map
+                  ? '$_sharedGifPrefix${base64Url.encode(utf8.encode(jsonEncode(sharedSticker)))}'
+                  : '$choicePrefix$url';
               final image = vividInlineEmojiArtwork(
                 inlineEmojiIdFromUrl(rawUrl),
                 Image.network(
@@ -34374,7 +34494,7 @@ class _RemoteExpressionGrid extends StatelessWidget {
                       borderRadius: BorderRadius.circular(12),
                       onTap: url.isEmpty
                           ? null
-                          : () => onSelected('$choicePrefix$url'),
+                          : () => onSelected(choice),
                       child: Center(child: ExcludeSemantics(child: image)),
                     ),
                   ),
@@ -34390,7 +34510,7 @@ class _RemoteExpressionGrid extends StatelessWidget {
                     borderRadius: BorderRadius.circular(12),
                     onTap: url.isEmpty
                         ? null
-                        : () => onSelected('$choicePrefix$url'),
+                        : () => onSelected(choice),
                     child: Padding(
                       padding: const EdgeInsets.all(2),
                       child: Center(
@@ -37103,6 +37223,15 @@ class _GroupChatScreenState extends State<GroupChatScreen>
               _addChatImageToListing(context, widget.token, msg, widget.me);
             },
           ),
+        if (_canSaveSharedSticker(msg))
+          CompactMessageMenuItem(
+            leading: const Icon(Icons.add_reaction_outlined, color: kPrimary),
+            title: const Text('שמור כמדבקה משותפת'),
+            onTap: () {
+              Navigator.pop(context);
+              _saveChatSharedSticker(context, widget.token, msg);
+            },
+          ),
         if (msg['fileType'] == 'image' && msg['fileUrl'] != null)
           CompactMessageMenuItem(
             leading: const Icon(Icons.copy_outlined, color: kPrimary),
@@ -37564,7 +37693,9 @@ class _GroupChatScreenState extends State<GroupChatScreen>
                       ChatAttachmentAction.surveyForm => 'survey',
                       _ => 'approval',
                     },
-                    lockType: true),
+                    lockType: action == ChatAttachmentAction.surveyForm,
+                    approvalAndSignatureOnly:
+                        action != ChatAttachmentAction.surveyForm),
               ));
           if (created == true && mounted) await _loadMessages(silent: true);
         case ChatAttachmentAction.contact:
@@ -49419,6 +49550,7 @@ class CreateEducationFormScreen extends StatefulWidget {
   final String token, groupId, groupName;
   final String initialType;
   final bool lockType;
+  final bool approvalAndSignatureOnly;
   final Map<String, dynamic>? initialForm, templateForm;
   const CreateEducationFormScreen({
     super.key,
@@ -49427,6 +49559,7 @@ class CreateEducationFormScreen extends StatefulWidget {
     required this.groupName,
     this.initialType = 'approval',
     this.lockType = false,
+    this.approvalAndSignatureOnly = false,
     this.initialForm,
     this.templateForm,
   }) : assert(
@@ -49530,7 +49663,9 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen>
         throw Exception(data['error'] ?? 'טעינת הרשימה נכשלה');
       final forms = (data['forms'] as List)
           .cast<Map<String, dynamic>>()
-          .where((f) => !widget.lockType || f['form_type'] == _type)
+          .where((f) => (!widget.lockType || f['form_type'] == _type) &&
+              (!widget.approvalAndSignatureOnly ||
+                  const ['approval', 'signature'].contains(f['form_type'])))
           .toList();
       if (!mounted) return;
       var query = '';
@@ -49796,10 +49931,11 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen>
                 Padding(
                   padding: const EdgeInsets.only(bottom: 12),
                   child: SegmentedButton<String>(
-                    segments: const [
-                      ButtonSegment(value: 'approval', label: Text('אישור')),
-                      ButtonSegment(value: 'signature', label: Text('חתימה')),
-                      ButtonSegment(value: 'survey', label: Text('סקר')),
+                    segments: [
+                      const ButtonSegment(value: 'approval', label: Text('אישור בלבד')),
+                      const ButtonSegment(value: 'signature', label: Text('אישור וחתימה')),
+                      if (!widget.approvalAndSignatureOnly)
+                        const ButtonSegment(value: 'survey', label: Text('סקר')),
                     ],
                     selected: {_type},
                     onSelectionChanged:
@@ -50126,7 +50262,9 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen>
               ? 'עריכת טופס'
               : widget.lockType
                   ? (signature ? 'יצירת בקשת חתימה' : 'יצירת אישור')
-                  : 'יצירת אישור, חתימה או סקר',
+                  : widget.approvalAndSignatureOnly
+                      ? 'יצירת אישור / חתימה'
+                      : 'יצירת אישור, חתימה או סקר',
         ),
         backgroundColor: kPrimary,
       ),
@@ -50161,10 +50299,11 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen>
                 Padding(
                   padding: const EdgeInsets.only(bottom: 12),
                   child: SegmentedButton<String>(
-                    segments: const [
-                      ButtonSegment(value: 'approval', label: Text('אישור')),
-                      ButtonSegment(value: 'signature', label: Text('חתימה')),
-                      ButtonSegment(value: 'survey', label: Text('סקר')),
+                    segments: [
+                      const ButtonSegment(value: 'approval', label: Text('אישור בלבד')),
+                      const ButtonSegment(value: 'signature', label: Text('אישור וחתימה')),
+                      if (!widget.approvalAndSignatureOnly)
+                        const ButtonSegment(value: 'survey', label: Text('סקר')),
                     ],
                     selected: {_type},
                     onSelectionChanged:
@@ -50532,6 +50671,16 @@ class _EducationFormDetailsScreenState extends State<EducationFormDetailsScreen>
         _ => 'טרם השלים',
       };
 
+  void _recordSignaturePoint(Offset point, Size bounds) {
+    setState(() {
+      if ((Offset.zero & bounds).contains(point)) {
+        _signature.add(point);
+      } else if (_signature.isNotEmpty && _signature.last != null) {
+        _signature.add(null);
+      }
+    });
+  }
+
   Future<void> _respond(String status) async {
     if (!_isRecipient || _saving || _form?['status'] == 'closed') return;
     final form = _form!;
@@ -50693,144 +50842,56 @@ class _EducationFormDetailsScreenState extends State<EducationFormDetailsScreen>
     if (response.statusCode == 200) _load();
   }
 
-  Future<void> _downloadSurveyPdf() async {
-    if (_form?['form_type'] != 'survey' ||
-        _form?['status'] != 'closed' ||
-        _exportingPdf) {
-      return;
-    }
-    setState(() {
-      _exportingPdf = true;
-      _error = null;
-    });
+  Future<void> _sendResultsPdfToSelf() async {
+    if (!_canManage || _exportingPdf || _form == null) return;
+    setState(() { _exportingPdf = true; _error = null; });
     try {
-      final fontData = await rootBundle.load('assets/fonts/NotoSansHebrew.ttf');
-      final font = pw.Font.ttf(fontData);
-      final document = pw.Document();
-      final questions = (_form?['questions'] as List? ?? []).cast<dynamic>();
-      final completed =
-          _participants.where((p) => p['response_status'] != null).length;
-      final generatedAt = DateTime.now();
-
-      document.addPage(
-        pw.MultiPage(
-          pageFormat: PdfPageFormat.a4,
-          textDirection: pw.TextDirection.rtl,
-          theme: pw.ThemeData.withFont(base: font, bold: font),
-          margin: const pw.EdgeInsets.all(32),
-          header: (context) => pw.Container(
-            alignment: pw.Alignment.centerRight,
-            padding: const pw.EdgeInsets.only(bottom: 8),
-            decoration: const pw.BoxDecoration(
-              border: pw.Border(
-                bottom: pw.BorderSide(color: PdfColors.grey400),
-              ),
-            ),
-            child: pw.Text(
-              'תוצאות סקר',
-              style: pw.TextStyle(fontSize: 11, color: PdfColors.grey700),
-            ),
-          ),
-          footer: (context) => pw.Align(
-            alignment: pw.Alignment.center,
-            child: pw.Text(
-              'עמוד ${context.pageNumber} מתוך ${context.pagesCount}',
-              style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey600),
-            ),
-          ),
-          build: (context) => [
-            pw.SizedBox(height: 12),
-            pw.Text(
-              _form?['title']?.toString() ?? 'סקר',
-              style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold),
-            ),
-            if ((_form?['description']?.toString().trim() ?? '')
-                .isNotEmpty) ...[
-              pw.SizedBox(height: 8),
-              pw.Text(_form!['description'].toString()),
-            ],
-            pw.SizedBox(height: 12),
-            pw.Container(
-              padding: const pw.EdgeInsets.all(10),
-              color: PdfColors.grey100,
-              child: pw.Row(
-                children: [
-                  pw.Expanded(
-                    child: pw.Text(
-                      'השלימו: $completed',
-                      style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
-                    ),
-                  ),
-                  pw.Expanded(
-                    child: pw.Text(
-                      'סה״כ משתתפים: ${_participants.length}',
-                      style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            pw.SizedBox(height: 18),
-            ...questions.asMap().entries.map((entry) {
-              final question = entry.value as Map<String, dynamic>;
-              final counts = surveyAnswerCounts(question, _results, entry.key);
-              return pw.Container(
-                margin: const pw.EdgeInsets.only(bottom: 14),
-                padding: const pw.EdgeInsets.all(12),
-                decoration: pw.BoxDecoration(
-                  border: pw.Border.all(color: PdfColors.grey400),
-                  borderRadius: const pw.BorderRadius.all(
-                    pw.Radius.circular(6),
-                  ),
-                ),
-                child: pw.Column(
-                  crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-                  children: [
-                    pw.Text(
-                      '${entry.key + 1}. ${question['text']}',
-                      style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
-                    ),
-                    pw.SizedBox(height: 8),
-                    ...counts.entries.map(
-                      (item) => pw.Padding(
-                        padding: const pw.EdgeInsets.symmetric(vertical: 3),
-                        child: pw.Row(
-                          children: [
-                            pw.Expanded(child: pw.Text(item.key)),
-                            pw.Text(
-                              '${item.value}',
-                              style: pw.TextStyle(
-                                fontWeight: pw.FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }),
-            pw.SizedBox(height: 8),
-            pw.Text(
-              'הופק בתאריך ${generatedAt.day}/${generatedAt.month}/${generatedAt.year} ${generatedAt.hour.toString().padLeft(2, '0')}:${generatedAt.minute.toString().padLeft(2, '0')}',
-              style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey600),
-            ),
-          ],
-        ),
+      final response = await http.get(
+        Uri.parse('$kApi/education-forms/${widget.formId}'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-
-      final title = (_form?['title']?.toString() ?? 'survey').replaceAll(
-        RegExp(r'[^\w\u0590-\u05FF-]+'),
-        '_',
-      );
-      final fileName =
-          '${title.toLowerCase().startsWith('betshuva-') ? title : 'betshuva-$title'}.pdf';
-      await Printing.sharePdf(bytes: await document.save(), filename: fileName);
-    } catch (e) {
-      if (mounted) {
-        setState(() => _error = 'הפקת קובץ ה־PDF נכשלה');
+      if (response.statusCode != 200) throw Exception('טעינת התוצאות נכשלה');
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final form = Map<String, dynamic>.from(data['form'] as Map);
+      if (!educationFormCanManage(form, isAdmin: widget.isAdmin) || data['participants'] is! List) {
+        throw Exception('אין הרשאה להפיק את הדוח');
       }
+      final profile = await http.get(Uri.parse('$kApi/profile'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      if (profile.statusCode != 200) throw Exception('טעינת החשבון נכשלה');
+      final myId = (jsonDecode(profile.body) as Map)['id']?.toString();
+      if (myId == null || myId.isEmpty) throw Exception('החשבון אינו זמין');
+      final bytes = await buildEducationFormPdf(
+        form: form,
+        participants: (data['participants'] as List).map((p) => Map<String, dynamic>.from(p as Map)).toList(),
+        results: (data['results'] as List? ?? []).map((r) => Map<String, dynamic>.from(r as Map)).toList(),
+        generatedAt: DateTime.now(),
+      );
+      final title = (form['title']?.toString() ?? 'results').replaceAll(RegExp(r'[^\w\u0590-\u05FF-]+'), '_');
+      final fileName = 'betshuva-$title-results.pdf';
+      final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
+        ..headers['Authorization'] = 'Bearer ${widget.token}'
+        ..fields['toUserId'] = myId
+        ..files.add(http.MultipartFile.fromBytes('file', bytes, filename: fileName,
+            contentType: MediaType('application', 'pdf')));
+      final uploadedResponse = await _sendMediaUpload(request);
+      final uploaded = jsonDecode(await uploadedResponse.stream.bytesToString()) as Map<String, dynamic>;
+      if (uploadedResponse.statusCode != 200 || uploaded['status'] == 'rejected') {
+        throw Exception(uploaded['error'] ?? uploaded['reason'] ?? 'שליחת הדוח נכשלה');
+      }
+      if (uploaded['status'] != 'pending') {
+        final url = uploaded['url'];
+        if (url is! String || url.isEmpty) throw Exception('קובץ הדוח אינו זמין');
+        final sent = await http.post(Uri.parse('$kApi/messages'),
+          headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+          body: jsonEncode({'toUserId': myId, 'fileUrl': url,
+            'fileName': uploaded['fileName'] ?? fileName, 'fileType': 'document'}));
+        if (sent.statusCode != 200) throw Exception('שליחת הדוח להודעות לעצמי נכשלה');
+      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
+        uploaded['status'] == 'pending' ? 'הדוח יישלח להודעות לעצמי לאחר הסריקה' : 'דוח ה־PDF נשלח להודעות לעצמי')));
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
     } finally {
       if (mounted) setState(() => _exportingPdf = false);
     }
@@ -51304,17 +51365,21 @@ class _EducationFormDetailsScreenState extends State<EducationFormDetailsScreen>
                   border: Border.all(color: kPrimary),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: GestureDetector(
-                  key: const ValueKey('education-signature-canvas'),
-                  onPanStart: (d) =>
-                      setState(() => _signature.add(d.localPosition)),
-                  onPanUpdate: (d) =>
-                      setState(() => _signature.add(d.localPosition)),
-                  onPanEnd: (_) => setState(() => _signature.add(null)),
-                  child: CustomPaint(
-                    painter: _EducationSignaturePainter(_signature),
-                  ),
-                ),
+                clipBehavior: Clip.antiAlias,
+                child: LayoutBuilder(builder: (context, constraints) {
+                  final bounds = Size(constraints.maxWidth, constraints.maxHeight);
+                  return GestureDetector(
+                    key: const ValueKey('education-signature-canvas'),
+                    behavior: HitTestBehavior.opaque,
+                    onPanStart: (d) => _recordSignaturePoint(d.localPosition, bounds),
+                    onPanUpdate: (d) => _recordSignaturePoint(d.localPosition, bounds),
+                    onPanEnd: (_) => setState(() => _signature.add(null)),
+                    onPanCancel: () => setState(() => _signature.add(null)),
+                    child: CustomPaint(
+                      painter: _EducationSignaturePainter(_signature),
+                    ),
+                  );
+                }),
               ),
               const SizedBox(height: 14),
               ElevatedButton.icon(
@@ -51470,12 +51535,12 @@ class _EducationFormDetailsScreenState extends State<EducationFormDetailsScreen>
                     ),
                   ),
                 ],
-                if (closed && _form?['form_type'] == 'survey') ...[
+                if (_canManage) ...[
                   const SizedBox(height: 8),
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
-                      onPressed: _exportingPdf ? null : _downloadSurveyPdf,
+                      onPressed: _exportingPdf ? null : _sendResultsPdfToSelf,
                       icon: _exportingPdf
                           ? const SizedBox(
                               width: 18,
@@ -51486,7 +51551,7 @@ class _EducationFormDetailsScreenState extends State<EducationFormDetailsScreen>
                               ),
                             )
                           : const Icon(Icons.picture_as_pdf_outlined),
-                      label: const Text('הורד תוצאות כ־PDF'),
+                      label: const Text('שלח דוח PDF להודעות לעצמי'),
                     ),
                   ),
                 ],
@@ -51794,6 +51859,8 @@ class _EducationSignaturePainter extends CustomPainter {
   _EducationSignaturePainter(this.points);
   @override
   void paint(Canvas canvas, Size size) {
+    canvas.save();
+    canvas.clipRect(Offset.zero & size);
     final paint = Paint()
       ..color = const Color(0xFF123B57)
       ..strokeWidth = 2.4
@@ -51804,6 +51871,7 @@ class _EducationSignaturePainter extends CustomPainter {
         canvas.drawLine(points[i]!, points[i + 1]!, paint);
       }
     }
+    canvas.restore();
   }
 
   @override
