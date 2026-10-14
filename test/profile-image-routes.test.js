@@ -66,6 +66,7 @@ function harness(method, route, { women = false } = {}) {
   const self = { id: viewerId, profile_pic_url: 'https://example.test/self-photo.jpg' };
   const pool = {
     async query(sql, values) {
+      if (sql.includes('AS photo_audience_allowed')) return { rows: values[1].map(id => ({ id, photo_audience_allowed: true })) };
       if (/^SELECT content_filter FROM users WHERE id=\$1$/.test(sql)) {
         filterReaders.push(values[0]);
         return { rows: [{ content_filter: { ...filter } }] };

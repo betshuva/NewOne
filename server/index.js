@@ -126,6 +126,7 @@ const {
   resolveScopedContentFilter,
 } = require('./content-filter-policy');
 const { projectProfileImages } = require('./profile-image-policy');
+const profilePhotoAudience = require('./profile-photo-audience');
 const { assertSenderMediaAllowed } = require('./sender-content-filter');
 const { initializeFilterAudit, registerFilterAuditRoutes, recordFilterEvent, recordFilterDecision } = require('./filter-audit');
 const { ensureSystemAuditSchema, registerSystemAuditRoutes, getAuditContext, recordAuditEvent, runWithAuditContext } = require('./system-audit');
@@ -2614,6 +2615,7 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users DROP COLUMN IF EXISTS community`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_pic_url TEXT`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy_pic TEXT NOT NULL DEFAULT 'all'`);
+    await pool.query(profilePhotoAudience.SCHEMA);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS filter_level TEXT NOT NULL DEFAULT 'standard'`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS read_receipts_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
@@ -6697,18 +6699,21 @@ app.post('/api/reports', auth, reportRateLimit, async (req, res) => {
 });
 
 // ── Profile: get ──────────────────────────────────────────────────
+profilePhotoAudience.registerProfilePhotoAudience(app, { auth: authWithDbCheck, getPool, secret: JWT_SECRET });
+
 app.get('/api/profile', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
       `SELECT id, short_id, name, email, phone, email_verified, phone_verified,
               city, country, street, house_number, apartment,
-              profile_pic_url, privacy_pic, filter_level, birth_date,
+              profile_pic_url, privacy_pic, profile_photo_user_ids, profile_photo_group_ids, filter_level, birth_date,
               notifications_enabled, read_receipts_enabled,
               (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
        FROM users WHERE id = $1`, [req.user.id]);
     if (!result.rows.length) return res.status(404).json({ error: 'לא נמצא' });
-    res.json(result.rows[0]);
+    res.set('Cache-Control', 'private, no-store');
+    res.json({ ...result.rows[0], profile_pic_url: profilePhotoAudience.signedPhotoUrl(result.rows[0].profile_pic_url, req.user.id) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -8030,32 +8035,44 @@ app.put('/api/profile/birth-date', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+function notifyProfilePhotoChange() {
+  for (const sid of onlineUsers.values())
+    io.to(sid).emit('filter:changed', { scope: 'general', reason: 'profile-photo-audience' });
+}
+
 // ── Profile: update ───────────────────────────────────────────────
 app.put('/api/profile', auth, async (req, res) => {
-  const { name, city, privacy_pic, filter_level, profile_pic_url,
+  const { name, city, filter_level, profile_pic_url,
           country, street, house_number, apartment } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'נדרש שם' });
-  const validPrivacy = ['all', 'contacts', 'nobody'];
   const validFilter  = ['standard', 'strict'];
   try {
     const pool = await getPool();
     const teen = req.user.isTeen === true;
+    const current = (await pool.query('SELECT profile_pic_url,privacy_pic,profile_photo_user_ids,profile_photo_group_ids FROM users WHERE id=$1', [req.user.id])).rows[0];
+    if (!current) return res.status(404).json({ error: 'החשבון לא נמצא' });
+    const audience = profilePhotoAudience.normalizeAudience(req.body, current, teen);
+    await profilePhotoAudience.validateAudience(pool, req.user.id, audience, teen, current);
+    const nextPhoto = await profilePhotoAudience.prepareProfilePhoto(pool, req.user.id,
+      profile_pic_url === undefined ? current.profile_pic_url : profile_pic_url, current.profile_pic_url,
+      { requirePrivate: audience.mode !== 'all' });
     await pool.query(
       `UPDATE users
        SET name=$1, city=$2,
            country=$3, street=$4, house_number=$5, apartment=$6,
            privacy_pic=$7, filter_level=$8,
-           profile_pic_url=$9
+           profile_pic_url=$9, profile_photo_user_ids=$11, profile_photo_group_ids=$12
        WHERE id=$10`,
       [name.trim(), teen ? null : city || null, teen ? null : country || 'ישראל',
        teen ? null : street || null, teen ? null : house_number || null,
        teen ? null : apartment || null,
-       teen ? 'contacts' : (validPrivacy.includes(privacy_pic) ? privacy_pic : 'all'),
+       audience.mode,
        teen ? 'strict' : (validFilter.includes(filter_level) ? filter_level : 'standard'),
-       profile_pic_url || null, req.user.id]);
+       nextPhoto, req.user.id, audience.userIds, audience.groupIds]);
+    notifyProfilePhotoChange();
     logActivity(req.user.id, 'update_profile', { name: name.trim(), city, country }, req.ip);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'לא ניתן לשמור את הפרופיל' }); }
 });
 
 // ── Profile: use an approved image from an accessible message ────
@@ -8086,16 +8103,22 @@ app.put('/api/profile/photo-from-message', auth, async (req, res) => {
       return res.status(404).json({
         error: 'התמונה לא נמצאה, אינה נגישה או שטרם אושרה בסריקה',
       });
-    const profilePicUrl = image.rows[0].file_url;
+    const current = (await pool.query('SELECT profile_pic_url,privacy_pic,profile_photo_user_ids,profile_photo_group_ids FROM users WHERE id=$1', [req.user.id])).rows[0];
+    if (!current) return res.status(404).json({ error: 'החשבון לא נמצא' });
+    const audience = profilePhotoAudience.normalizeAudience(req.body, current, req.user.isTeen === true);
+    await profilePhotoAudience.validateAudience(pool, req.user.id, audience, req.user.isTeen === true, current);
+    const profilePicUrl = await profilePhotoAudience.prepareProfilePhoto(pool, req.user.id,
+      image.rows[0].file_url, current.profile_pic_url, { trustedMessage: true });
     await pool.query(
-      'UPDATE users SET profile_pic_url=$1 WHERE id=$2',
-      [profilePicUrl, req.user.id]);
+      'UPDATE users SET profile_pic_url=$1,privacy_pic=$3,profile_photo_user_ids=$4,profile_photo_group_ids=$5 WHERE id=$2',
+      [profilePicUrl, req.user.id, audience.mode, audience.userIds, audience.groupIds]);
+    notifyProfilePhotoChange();
     logActivity(req.user.id, 'profile_photo_from_message',
       { messageId, profilePicUrl }, req.ip);
-    res.json({ ok: true, profile_pic_url: profilePicUrl });
+    res.json({ ok: true, profile_pic_url: profilePhotoAudience.signedPhotoUrl(profilePicUrl, req.user.id) });
   } catch (e) {
     console.error('profile photo from message:', e.message);
-    res.status(500).json({ error: 'לא ניתן היה לעדכן את תמונת הפרופיל' });
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'לא ניתן היה לעדכן את תמונת הפרופיל' });
   }
 });
 

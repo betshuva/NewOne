@@ -1,3 +1,4 @@
+import 'profile_photo_audience.dart';
 import 'settings_presentation.dart';
 import 'remote_card_notice.dart';
 import 'education_form_tools.dart';
@@ -1209,6 +1210,8 @@ Future<void> _setMessageImageAsProfile(
     ),
   );
   if (confirmed != true || !context.mounted) return;
+  final audience = await chooseProfilePhotoAudience(context, api: kApi, token: token);
+  if (audience == null || !context.mounted) return;
   try {
     final response = await http.put(
       Uri.parse('$kApi/profile/photo-from-message'),
@@ -1216,7 +1219,7 @@ Future<void> _setMessageImageAsProfile(
         'Authorization': 'Bearer $token',
         'Content-Type': 'application/json',
       },
-      body: jsonEncode({'messageId': message['id']}),
+      body: jsonEncode({'messageId': message['id'], ...audience.toJson()}),
     );
     if (!context.mounted) return;
     if (response.statusCode == 200) {
@@ -2084,7 +2087,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.79';
+const kVersion = '1.3.80';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -46425,13 +46428,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final _streetCtrl = TextEditingController();
   final _houseCtrl = TextEditingController();
   final _apartmentCtrl = TextEditingController();
-  String _privacyPic = 'all';
+  ProfilePhotoAudience _photoAudience = const ProfilePhotoAudience();
   String? _picUrl;
   String? _email;
   String? _phone;
   bool _emailVerified = false;
   bool _phoneVerified = false;
   bool _loading = true;
+  bool _profileLoaded = false;
   bool _saving = false;
   String? _error;
 
@@ -46468,7 +46472,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           _streetCtrl.text = data['street'] as String? ?? '';
           _houseCtrl.text = data['house_number'] as String? ?? '';
           _apartmentCtrl.text = data['apartment'] as String? ?? '';
-          _privacyPic = data['privacy_pic'] as String? ?? 'all';
+          _photoAudience = ProfilePhotoAudience.fromJson(data);
           _picUrl = data['profile_pic_url'] as String?;
           _email = data['email'] as String?;
           _phone = data['phone'] as String?;
@@ -46476,13 +46480,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
               data['email_verified'] == true || data['email_verified'] == 1;
           _phoneVerified =
               data['phone_verified'] == true || data['phone_verified'] == 1;
+          _profileLoaded = true;
           _loading = false;
         });
       } else {
-        setState(() => _loading = false);
+        setState(() {
+          _loading = false;
+          _error = 'לא ניתן לטעון את הפרופיל. נסה לפתוח אותו מחדש';
+        });
       }
     } catch (_) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) setState(() {
+          _loading = false;
+          _error = 'לא ניתן לטעון את הפרופיל. נסה לפתוח אותו מחדש';
+        });
     }
   }
 
@@ -46511,7 +46522,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           'street': _streetCtrl.text.trim(),
           'house_number': _houseCtrl.text.trim(),
           'apartment': _apartmentCtrl.text.trim(),
-          'privacy_pic': _privacyPic,
+          ..._photoAudience.toJson(),
           'profile_pic_url': _picUrl,
         }),
       );
@@ -46533,6 +46544,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
         });
       }
     }
+  }
+
+  Future<void> _choosePhotoAudience() async {
+    final audience = await chooseProfilePhotoAudience(context,
+      api: kApi, token: widget.token, initial: _photoAudience);
+    if (audience != null && mounted) setState(() => _photoAudience = audience);
   }
 
   Future<void> _changePhoto() async {
@@ -46579,7 +46596,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
             borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
         builder: (_) => const AvatarPickerSheet(),
       );
-      if (emoji != null && mounted) setState(() => _picUrl = emoji);
+      if (emoji != null && mounted) {
+        setState(() => _picUrl = emoji);
+        await _choosePhotoAudience();
+      }
       return;
     }
 
@@ -46621,6 +46641,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           _saving = false;
           _error = null;
         });
+        await _choosePhotoAudience();
       } else {
         Map<String, dynamic>? data;
         try {
@@ -46652,7 +46673,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         actions: [
           if (!_loading)
             TextButton(
-              onPressed: _saving ? null : _save,
+              onPressed: _saving || !_profileLoaded ? null : _save,
               child: _saving
                   ? const SizedBox(
                       width: 20,
@@ -46672,7 +46693,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 // Avatar
                 Center(
                   child: GestureDetector(
-                    onTap: _changePhoto,
+                    onTap: _profileLoaded && !_saving ? _changePhoto : null,
                     child: Stack(
                       children: [
                         UserAvatar(
@@ -46702,7 +46723,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: Text('לחץ לשינוי תמונה • תעבור בדיקת תוכן לא ראוי',
                       style: TextStyle(fontSize: 12, color: kSubtext)),
                 ),
-                const SizedBox(height: 28),
+                const SizedBox(height: 12),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.visibility_outlined, color: kPrimary),
+                    title: const Text('מי יכול לראות את התמונה?'),
+                    subtitle: Text(_photoAudience.label),
+                    trailing: const Icon(Icons.chevron_left),
+                    onTap: _saving || !_profileLoaded ? null : _choosePhotoAudience,
+                  ),
+                ),
+                const SizedBox(height: 20),
 
                 if (_error != null) ...[
                   Container(
@@ -46840,30 +46871,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ]),
                 const SizedBox(height: 24),
 
-                _FieldLabel(label: 'מי רואה את תמונת הפרופיל שלי'),
-                const SizedBox(height: 8),
-                Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: kBorder, width: 1.5),
-                    borderRadius: BorderRadius.circular(10),
-                    color: kCard,
-                  ),
-                  padding: const EdgeInsets.symmetric(horizontal: 14),
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      value: _privacyPic,
-                      isExpanded: true,
-                      items: const [
-                        DropdownMenuItem(value: 'all', child: Text('כולם')),
-                        DropdownMenuItem(
-                            value: 'contacts', child: Text('אנשי קשר בלבד')),
-                        DropdownMenuItem(
-                            value: 'nobody', child: Text('אף אחד')),
-                      ],
-                      onChanged: (v) => setState(() => _privacyPic = v!),
-                    ),
-                  ),
-                ),
+
               ],
             ),
     );

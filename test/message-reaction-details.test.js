@@ -39,6 +39,7 @@ function memoryPool() {
     [b, { user_id: b, name: 'חבר', profile_pic_url: null, emoji: '❤️' }]]);
   const writes = [], reads = [];
   const pool = { query: async (sql, values) => {
+    if (sql.includes('AS photo_audience_allowed')) return { rows: values[1].map(id => ({ id, photo_audience_allowed: true })) };
     if (sql.startsWith('SELECT m.id,m.sender_id')) {
       reads.push(values);
       return { rows: values[0] === messageId && [a, b].includes(values[1])

@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS users (
   house_number        TEXT,
   apartment           TEXT,
   profile_pic_url     TEXT,
-  privacy_pic         TEXT NOT NULL DEFAULT 'all',      -- all | contacts | nobody
+  privacy_pic         TEXT NOT NULL DEFAULT 'all',      -- all | contacts | nobody | selected
+  profile_photo_user_ids UUID[] NOT NULL DEFAULT '{}',
+  profile_photo_group_ids UUID[] NOT NULL DEFAULT '{}',
   filter_level        TEXT NOT NULL DEFAULT 'standard', -- standard | strict
   notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE,
   read_receipts_enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -39,6 +41,18 @@ CREATE TABLE IF NOT EXISTS users (
   referral_count      INTEGER NOT NULL DEFAULT 0,
   created_at          TIMESTAMPTZ DEFAULT now()
 );
+
+-- Private avatar bytes are served only after the viewer's current audience
+-- and receiving filter have been checked. They are not public upload files.
+CREATE TABLE IF NOT EXISTS profile_photo_assets (
+  id UUID PRIMARY KEY,
+  owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  source_url TEXT NOT NULL,
+  classification JSONB,
+  image_bytes BYTEA NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS profile_photo_assets_owner_idx ON profile_photo_assets(owner_id);
 
 CREATE TABLE IF NOT EXISTS israel_localities (
   code                INTEGER PRIMARY KEY,

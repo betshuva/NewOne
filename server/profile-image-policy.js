@@ -2,6 +2,7 @@
 
 const { contentAllowedByFilter, normalizeContentFilter } = require('./content-filter-policy');
 const { getProfileAssetMetadata } = require('./profile-image-assets');
+const { projectAudience, PHOTO_BASE, signedPhotoUrl } = require('./profile-photo-audience');
 
 const IMAGE_CATEGORIES = ['men', 'women', 'children', 'nonHumanImages'];
 // Built-in guide assets have known categories. Additional legacy portraits
@@ -33,6 +34,7 @@ async function projectProfileImages(pool, viewerId, rows, {
   fields = ['profile_pic_url'], resolveAsset = getProfileAssetMetadata,
 } = {}) {
   if (!rows.length) return rows;
+  rows = await projectAudience(pool, viewerId, rows, fields);
   const urls = [...new Set(rows.flatMap(row => fields.map(field => row[field]))
     .filter(url => typeof url === 'string' && url && !url.startsWith('emoji:')))];
   if (!urls.length) return rows;
@@ -43,7 +45,13 @@ async function projectProfileImages(pool, viewerId, rows, {
     pool.query(`SELECT public_url, file_type, moderation_status, content_purged_at,
         moderation_details->'classification' AS classification,
         moderation_details->'blocked' AS blocked
-      FROM stored_files WHERE public_url=ANY($1::text[])`, [urls]),
+      FROM stored_files WHERE public_url=ANY($1::text[])
+      UNION ALL SELECT '${PHOTO_BASE}' || a.id::text AS public_url, 'image' AS file_type,
+        COALESCE(sf.moderation_status,'approved') AS moderation_status,NULL AS content_purged_at,
+        COALESCE(sf.moderation_details->'classification',a.classification) AS classification,
+        sf.moderation_details->'blocked' AS blocked
+        FROM profile_photo_assets a LEFT JOIN stored_files sf ON sf.public_url=a.source_url
+        WHERE '${PHOTO_BASE}' || a.id::text=ANY($1::text[])`, [urls]),
   ]);
   const filter = viewer.rows[0]?.content_filter ||
     Object.fromEntries(IMAGE_CATEGORIES.map(category => [category, false]));
@@ -59,6 +67,7 @@ async function projectProfileImages(pool, viewerId, rows, {
     for (const field of fields) {
       if (Object.hasOwn(row, field) &&
           !profileImageAllowed(row[field], filter, byUrl.get(row[field]))) projected[field] = null;
+      else if (Object.hasOwn(row, field)) projected[field] = signedPhotoUrl(row[field], viewerId);
     }
     return projected;
   });

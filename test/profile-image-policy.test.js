@@ -75,6 +75,7 @@ function fakePool(filter, files) {
     filter, calls: [],
     async query(sql, params) {
       this.calls.push({ sql, params });
+      if (sql.includes('AS photo_audience_allowed')) return { rows: [] };
       if (sql.startsWith('SELECT content_filter')) return { rows: [{ content_filter: this.filter }] };
       if (sql.includes('FROM stored_files'))
         return { rows: files.filter(file => params[0].includes(file.public_url)) };
@@ -98,9 +99,9 @@ test('projection batches duplicate URLs, preserves row fields and never mutates 
   assert.deepEqual(projected[2], { ...rows[2], profile_pic_url: null });
   assert.equal(projected[3].profile_pic_url, 'emoji:🌻');
   assert.equal(rows[2].profile_pic_url, external);
-  assert.equal(pool.calls.length, 2, 'one preference query and one batched file query');
-  assert.deepEqual(pool.calls[0].params, ['viewer']);
-  assert.deepEqual(pool.calls[1].params, [[url, external]]);
+  assert.equal(pool.calls.length, 3, 'one audience query, one preference query and one batched file query');
+  assert.deepEqual(pool.calls[1].params, ['viewer']);
+  assert.deepEqual(pool.calls[2].params, [[url, external]]);
 });
 
 test('changing general preferences takes effect on the next response for existing contacts', async () => {
@@ -122,9 +123,9 @@ test('seller aliases and group pictures use the same policy without relying on u
     [{ id: 'group', profile_pic_url: null }]);
 });
 
-test('empty or emoji-only responses need no classification query', async () => {
+test('empty and missing images need no classification query', async () => {
   const pool = { query: async () => assert.fail('no raster images to project') };
-  for (const rows of [[], [{ id: 'friend' }], [{ profile_pic_url: null }], [{ profile_pic_url: 'emoji:🌻' }]])
+  for (const rows of [[], [{ profile_pic_url: null }], [{ profile_pic_url: 'emoji:🌻' }]])
     assert.deepEqual(await projectProfileImages(pool, 'viewer', rows), rows);
 });
 
