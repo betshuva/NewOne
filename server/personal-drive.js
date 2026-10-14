@@ -94,8 +94,14 @@ async function deleteAppDataFile(refreshToken, fileId) {
     throw new Error(`Google appDataFolder delete failed (${response.status})`);
 }
 
-async function downloadAppDataFile(refreshToken, fileId, maxBytes = 110 * 1024 * 1024) {
+async function downloadAppDataFile(refreshToken, fileId, maxBytes = 110 * 1024 * 1024, options) {
   const client = clientForRefreshToken(refreshToken);
+  if (options?.expectedBytes >= 128 * 1024 * 1024) {
+    return require('./drive-download-checkpoint').downloadCheckpointed({
+      client, fileId, maxBytes, checkpointRoot: options.checkpointRoot, ownerKey: options.ownerKey,
+      expectedBytes: options.expectedBytes, expectedSha256: options.expectedSha256,
+    });
+  }
   const headers = await client.getRequestHeaders();
   const response = await fetch(
     `${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`,

@@ -242,7 +242,7 @@ void main() {
   });
 
   testWidgets(
-      'formatting retains emoji-only enlargement and compact custom size',
+      'formatting keeps Unicode size and adds ten percent to custom artwork',
       (tester) async {
     await _show(tester, '😀', textFormatting: false);
     expect(tester.widget<SvgPicture>(find.byType(SvgPicture)).width, 44);
@@ -253,7 +253,7 @@ void main() {
         tester
             .getSize(find.byKey(const ValueKey('inline-custom-emoji-1')))
             .width,
-        closeTo(20.79, 0.001));
+        closeTo(20.79 * 1.1, 0.001));
     expect(tester.takeException(), isNull);
   });
 

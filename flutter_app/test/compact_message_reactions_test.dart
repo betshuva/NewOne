@@ -60,10 +60,17 @@ Widget _reactions(http.Client client, MessageReactionsCache cache,
     );
 
 Widget _view(http.Client client, MessageReactionsCache cache,
-        {Widget? body, String token = _token, String messageId = _id}) =>
+        {Widget? body,
+        String token = _token,
+        String messageId = _id,
+        double textScale = 1}) =>
     DefaultAssetBundle(
       bundle: _ReactionAssets(),
       child: MaterialApp(
+        builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context)
+                .copyWith(textScaler: TextScaler.linear(textScale)),
+            child: child!),
         home: Scaffold(
           body: body ??
               _reactions(client, cache, token: token, messageId: messageId),
@@ -99,8 +106,53 @@ Future<void> _dispose(WidgetTester tester, http.Client client,
 }
 
 void main() {
+  testWidgets(
+      'custom star artwork and a two-person count stay separate at 320px and 200 percent text',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 568);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const one = '[[bt-emoji:027]]';
+    const two = '[[bt-emoji:133]]';
+    final cache = MessageReactionsCache();
+    final client = MockClient((_) async => _response([
+          _item(one),
+          _item(two, count: 2),
+        ]));
+    await tester.pumpWidget(_view(client, cache, textScale: 2));
+    await tester.pumpAndSettle();
+    expect(find.descendant(of: _button(one), matching: find.text('1')),
+        findsNothing);
+    final count = find.descendant(of: _button(two), matching: find.text('2'));
+    expect(count, findsOneWidget);
+    for (final item in [(one, 27), (two, 133)]) {
+      final hit = tester.getRect(_button(item.$1));
+      final artwork = tester.getRect(find.descendant(
+          of: _button(item.$1),
+          matching: find.byKey(ValueKey('inline-custom-emoji-${item.$2}'))));
+      expect(artwork.left, greaterThanOrEqualTo(hit.left));
+      expect(artwork.right, lessThanOrEqualTo(hit.right));
+      expect(artwork.top, greaterThanOrEqualTo(hit.top));
+      expect(artwork.bottom, lessThanOrEqualTo(hit.bottom));
+      expect(hit.left, greaterThanOrEqualTo(0));
+      expect(hit.right, lessThanOrEqualTo(320));
+      if (item.$1 == two) {
+        final number = tester.getRect(count);
+        expect(artwork.overlaps(number), isFalse);
+        expect(number.left, greaterThanOrEqualTo(hit.left));
+        expect(number.right, lessThanOrEqualTo(hit.right));
+        expect(number.top, greaterThanOrEqualTo(hit.top));
+        expect(number.bottom, lessThanOrEqualTo(hit.bottom));
+      }
+    }
+    expect(tester.takeException(), isNull);
+    await _dispose(tester, client, cache);
+  });
+
   for (final id in [1, 150]) {
-    testWidgets('custom reaction $id stays 20px and overlaps the media corner',
+    testWidgets(
+        'custom reaction $id fits its enlarged frame at the media corner',
         (tester) async {
       final emoji = '[[bt-emoji:${id.toString().padLeft(3, '0')}]]';
       final cache = MessageReactionsCache();
@@ -124,10 +176,18 @@ void main() {
           of: _button(emoji),
           matching: find.byKey(ValueKey('inline-custom-emoji-$id'))));
       expect(hit.right, closeTo(media.right, .001));
-      expect(hit.size, const Size(32, 32));
-      expect(glyph.width, closeTo(20, .001));
-      expect(glyph.height, closeTo(20, .001));
-      expect(glyph.top, closeTo(media.bottom - 8, .001));
+      expect(hit.width, greaterThanOrEqualTo(32));
+      expect(hit.height, 32);
+      expect(glyph.width, closeTo(24.2, .001));
+      expect(glyph.height, closeTo(24.2, .001));
+      // Middle-aligned inline artwork can shift by a fraction of a pixel with
+      // line metrics; its exact dimensions and full containment stay strict.
+      expect(glyph.center.dy, closeTo(hit.center.dy, .5));
+      expect(glyph.right, closeTo(hit.right - 6, .001));
+      expect(glyph.left, greaterThanOrEqualTo(hit.left));
+      expect(glyph.top, greaterThanOrEqualTo(hit.top));
+      expect(glyph.bottom, lessThanOrEqualTo(hit.bottom));
+      expect(glyph.top, lessThan(media.bottom));
       expect(find.byType(ActionChip), findsNothing);
       expect(find.textContaining('[[bt-emoji:'), findsNothing);
       final button = tester.widget<TextButton>(_button(emoji));

@@ -281,6 +281,10 @@ void main() {
         _expectUpload(chat);
         expect(chat.sends, isEmpty);
         expect(_composer(tester).controller!.value, before);
+        expect(_composer(tester).focusNode!.hasFocus, isFalse);
+        // A second keyboard insertion requires reopening the closed keyboard.
+        await tester.showKeyboard(find.byType(TextField).last);
+        await tester.pump();
         await _commit(tester, bytes: _png);
         await _pumpSteps(tester);
         expect(chat.uploads, hasLength(1));
@@ -329,7 +333,7 @@ void main() {
             expect(tester.widget<BlockedImageNotice>(notice).reason,
                 'התמונה לא אושרה בסריקה');
           } else {
-            expect(find.text('keyboard-image.png'), findsWidgets);
+            expect(find.textContaining('keyboard-image.png'), findsWidgets);
           }
         });
       }, variant: _android);

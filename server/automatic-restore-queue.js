@@ -47,7 +47,7 @@ function createVerificationLock() {
 }
 
 function createAutomaticRestoreQueue({ getPool, drive = personalDrive,
-  withVerification = task => task(),
+  withVerification = task => task(), checkpointRoot,
   releaseVerified = async () => {}, onVerified = async () => {}, onError = () => {} }) {
   let running = false;
   return async function tick() {
@@ -62,7 +62,9 @@ function createAutomaticRestoreQueue({ getPool, drive = personalDrive,
         const metadata = row.encryption_metadata;
         const refreshToken = drive.decryptRefreshToken(row.encrypted_refresh_token, row.user_id);
         const downloads = await Promise.allSettled([
-          drive.downloadAppDataFile(refreshToken, row.remote_file_id, Number(row.file_size) + 1024),
+          drive.downloadAppDataFile(refreshToken, row.remote_file_id, Number(row.file_size) + 1024,
+            { checkpointRoot, ownerKey: row.user_id, expectedBytes: Number(row.file_size),
+              expectedSha256: row.encrypted_sha256 }),
           drive.downloadAppDataFile(refreshToken, metadata.manifestRemoteId, 1024 * 1024),
         ]);
         const failedDownload = downloads.find(result => result.status === 'rejected');
@@ -112,6 +114,16 @@ function createAutomaticRestoreQueue({ getPool, drive = personalDrive,
       await releaseVerified();
       return { verified: 1, failed: 0 };
     } catch (error) {
+      if (!verified && row && pool && error?.code === 'DRIVE_DOWNLOAD_IN_PROGRESS') {
+        try {
+          await pool.query(`UPDATE media_backup_items SET restore_next_attempt_at=NULL,
+            restore_last_error='RESTORE_DOWNLOAD_IN_PROGRESS',updated_at=now()
+            WHERE id=$1 AND status='verified' AND restore_verified_at IS NULL`, [row.id]);
+          return { verified: 0, failed: 0, pending: true };
+        } catch (recordError) {
+          onError(recordError, { stage: 'queue', code: 'RESTORE_RETRY_RECORD_FAILED' });
+        }
+      }
       const code = errorCode(error);
       if (verified) {
         onError(error, { stage: 'post_verification', fileId: row.id, code });

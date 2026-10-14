@@ -66,10 +66,15 @@ class _MessageReactionEmojiPickerState
       if (labels is! List || labels.length != 150) {
         throw const FormatException('Invalid immutable reaction IDs');
       }
+      final removedIds = (category['removedIds'] as List? ?? const [])
+          .whereType<int>()
+          .toSet();
       // Reaction IDs retain the original 150 images independently of the
       // live sticker and emoji folders used by the composer.
       final folder = category['coloredPath'] ??
-          (category['path'] == 'stickers' ? 'user-20261008-color' : category['path']);
+          (category['path'] == 'stickers'
+              ? 'user-20261008-color'
+              : category['path']);
       final entries = <_ReactionEmoji>[];
       for (var index = 0; index < labels.length; index++) {
         final id = index + 1;
@@ -81,7 +86,9 @@ class _MessageReactionEmojiPickerState
             inlineEmojiIdFromUrl(url) != id) {
           throw const FormatException('Invalid reaction library item');
         }
-        entries.add(_ReactionEmoji(id, label, 'https://betshuva.com$url'));
+        if (!removedIds.contains(id)) {
+          entries.add(_ReactionEmoji(id, label, 'https://betshuva.com$url'));
+        }
       }
       if (!mounted || !identical(request, _request)) return;
       setState(() {
@@ -207,13 +214,13 @@ class _MessageReactionEmojiPickerState
                                     Navigator.pop(context, entry.token),
                                 child: Center(
                                   child: Image.network(entry.url,
-                                      width: 32,
-                                      height: 32,
+                                      width: 32 * customEmojiDisplayGrowth,
+                                      height: 32 * customEmojiDisplayGrowth,
                                       fit: BoxFit.contain,
                                       excludeFromSemantics: true,
                                       errorBuilder: (_, __, ___) => const Icon(
                                           Icons.emoji_emotions,
-                                          size: 32)),
+                                          size: 32 * customEmojiDisplayGrowth)),
                                 ),
                               ),
                             ),

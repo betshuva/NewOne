@@ -1,3 +1,4 @@
+import 'chat_design_settings.dart';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'media_pointer_barrier.dart';
@@ -28,6 +29,10 @@ Future<ChatAttachmentAction?> showChatAttachmentMenu({
   bool allowPaste = false,
   bool allowEducationForms = false,
 }) {
+  final design = ChatDesignStore.shared.value;
+  final presentation = design.choice('messageMenuPresentation', 'auto');
+  if (design.flag('dismissKeyboardOnPicker'))
+    FocusManager.instance.primaryFocus?.unfocus();
   final overlay = Navigator.of(context, rootNavigator: true)
       .overlay!
       .context
@@ -41,9 +46,9 @@ Future<ChatAttachmentAction?> showChatAttachmentMenu({
   return showGeneralDialog<ChatAttachmentAction>(
     context: context,
     useRootNavigator: true,
-    barrierDismissible: true,
+    barrierDismissible: design.flag('messageMenuDismissOnOutsideTap'),
     barrierLabel: 'סגירת תפריט הצירוף',
-    barrierColor: Colors.transparent,
+    barrierColor: presentation == 'auto' ? Colors.transparent : Colors.black26,
     transitionDuration: const Duration(milliseconds: 120),
     pageBuilder: (menuContext, animation, secondaryAnimation) =>
         MediaPointerBarrier(
@@ -54,6 +59,7 @@ Future<ChatAttachmentAction?> showChatAttachmentMenu({
           anchorRect(),
           MediaQuery.of(menuContext).padding,
           MediaQuery.of(menuContext).viewInsets.bottom,
+          presentation,
         ),
         child: _AttachmentMenu(
           imagesAllowed: imagesAllowed,
@@ -71,7 +77,9 @@ Future<ChatAttachmentAction?> showChatAttachmentMenu({
 }
 
 class _AttachmentMenuLayout extends SingleChildLayoutDelegate {
-  const _AttachmentMenuLayout(this.anchor, this.padding, this.keyboard);
+  const _AttachmentMenuLayout(this.anchor, this.padding, this.keyboard,
+      [this.presentation = 'auto']);
+  final String presentation;
   final Rect anchor;
   final EdgeInsets padding;
   final double keyboard;
@@ -84,9 +92,10 @@ class _AttachmentMenuLayout extends SingleChildLayoutDelegate {
     final above = anchor.top - 8 - top;
     final below = bottom - anchor.bottom - 8;
     return BoxConstraints(
-      maxWidth: math.min(
-          244, math.max(0, constraints.maxWidth - padding.horizontal - 16)),
-      maxHeight: math.max(0, math.max(above, below)),
+      maxWidth: math.min(presentation == 'auto' ? 244 : 360,
+          math.max(0, constraints.maxWidth - padding.horizontal - 16)),
+      maxHeight: math.max(
+          0, presentation == 'auto' ? math.max(above, below) : bottom - top),
     );
   }
 
@@ -94,6 +103,12 @@ class _AttachmentMenuLayout extends SingleChildLayoutDelegate {
   Offset getPositionForChild(Size size, Size childSize) {
     final top = padding.top + 8;
     final bottom = size.height - math.max(padding.bottom, keyboard) - 8;
+    if (presentation != 'auto')
+      return Offset(
+          (size.width - childSize.width) / 2,
+          presentation == 'sheet'
+              ? math.max(top, bottom - childSize.height)
+              : top + math.max(0, (bottom - top - childSize.height) / 2));
     final above = anchor.top - 8 - childSize.height;
     final y = above >= top ? above : anchor.bottom + 8;
     return Offset(
@@ -109,7 +124,8 @@ class _AttachmentMenuLayout extends SingleChildLayoutDelegate {
   bool shouldRelayout(_AttachmentMenuLayout old) =>
       anchor != old.anchor ||
       padding != old.padding ||
-      keyboard != old.keyboard;
+      keyboard != old.keyboard ||
+      presentation != old.presentation;
 }
 
 class _AttachmentMenu extends StatefulWidget {
@@ -204,51 +220,60 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
                     ),
                     const Divider(height: 1),
                   ],
-                  if (_section == null) ...[
-                    _item('העלאת קבצים', Icons.upload_file, Colors.blue,
-                        action: ChatAttachmentAction.upload),
-                    _item('צילום', Icons.camera_alt_outlined, Colors.pink,
-                        action: ChatAttachmentAction.capture,
-                        allowed: widget.imagesAllowed || widget.videoAllowed),
-                    _item('סריקת מסמך', Icons.document_scanner_outlined,
-                        Colors.orange,
-                        action: ChatAttachmentAction.scan,
-                        allowed: widget.textAllowed),
-                    if (widget.allowEducationForms)
-                      _item('אישור, חתימה או סקר', Icons.fact_check_outlined,
-                          Colors.indigo,
-                          section: 'forms', allowed: widget.textAllowed),
-                    _item('שיתוף איש קשר', Icons.contact_phone_outlined,
-                        Colors.teal,
-                        section: 'contact'),
-                    _item('שיתוף מיקום או מקום', Icons.location_on_outlined,
-                        Colors.deepOrange,
-                        action: ChatAttachmentAction.location,
-                        allowed: widget.textAllowed),
-                    if (widget.allowPaste)
-                      _item('הדבק תמונה', Icons.paste, Colors.blue,
-                          action: ChatAttachmentAction.paste,
-                          allowed: widget.imagesAllowed),
-                  ] else if (_section == 'forms') ...[
-                    _item('אישור', Icons.fact_check_outlined, Colors.indigo,
-                        action: ChatAttachmentAction.approvalForm,
-                        allowed: widget.textAllowed),
-                    _item('חתימה', Icons.draw_outlined, Colors.indigo,
-                        action: ChatAttachmentAction.signatureForm,
-                        allowed: widget.textAllowed),
-                    _item('סקר', Icons.poll_outlined, Colors.indigo,
-                        action: ChatAttachmentAction.surveyForm,
-                        allowed: widget.textAllowed),
-                  ] else ...[
-                    _item('שתף איש קשר', Icons.contact_phone_outlined,
-                        Colors.teal,
-                        action: ChatAttachmentAction.contact,
-                        allowed: widget.textAllowed),
-                    _item(
-                        'שתף את הפרטים שלי', Icons.badge_outlined, Colors.blue,
-                        action: ChatAttachmentAction.myContact,
-                        allowed: widget.textAllowed),
-                  ],
+                  ...ChatDesignStore.shared.value.orderedItems(
+                      'messageMenuOrder',
+                      <Widget>[
+                        if (_section == null) ...[
+                          _item('העלאת קבצים', Icons.upload_file, Colors.blue,
+                              action: ChatAttachmentAction.upload),
+                          _item('צילום', Icons.camera_alt_outlined, Colors.pink,
+                              action: ChatAttachmentAction.capture,
+                              allowed:
+                                  widget.imagesAllowed || widget.videoAllowed),
+                          _item('סריקת מסמך', Icons.document_scanner_outlined,
+                              Colors.orange,
+                              action: ChatAttachmentAction.scan,
+                              allowed: widget.textAllowed),
+                          if (widget.allowEducationForms)
+                            _item('אישור, חתימה או סקר',
+                                Icons.fact_check_outlined, Colors.indigo,
+                                section: 'forms', allowed: widget.textAllowed),
+                          _item('שיתוף איש קשר', Icons.contact_phone_outlined,
+                              Colors.teal,
+                              section: 'contact'),
+                          _item('שיתוף מיקום או מקום',
+                              Icons.location_on_outlined, Colors.deepOrange,
+                              action: ChatAttachmentAction.location,
+                              allowed: widget.textAllowed),
+                          if (widget.allowPaste)
+                            _item('הדבק תמונה', Icons.paste, Colors.blue,
+                                action: ChatAttachmentAction.paste,
+                                allowed: widget.imagesAllowed),
+                        ] else if (_section == 'forms') ...[
+                          _item(
+                              'אישור', Icons.fact_check_outlined, Colors.indigo,
+                              action: ChatAttachmentAction.approvalForm,
+                              allowed: widget.textAllowed),
+                          _item('חתימה', Icons.draw_outlined, Colors.indigo,
+                              action: ChatAttachmentAction.signatureForm,
+                              allowed: widget.textAllowed),
+                          _item('סקר', Icons.poll_outlined, Colors.indigo,
+                              action: ChatAttachmentAction.surveyForm,
+                              allowed: widget.textAllowed),
+                        ] else ...[
+                          _item('שתף איש קשר', Icons.contact_phone_outlined,
+                              Colors.teal,
+                              action: ChatAttachmentAction.contact,
+                              allowed: widget.textAllowed),
+                          _item('שתף את הפרטים שלי', Icons.badge_outlined,
+                              Colors.blue,
+                              action: ChatAttachmentAction.myContact,
+                              allowed: widget.textAllowed),
+                        ],
+                      ],
+                      (item) => item is ListTile && item.title is Text
+                          ? (item.title as Text).data ?? ''
+                          : ''),
                 ]),
               ),
             ),

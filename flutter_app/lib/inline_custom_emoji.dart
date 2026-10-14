@@ -19,6 +19,8 @@ const _coloredEmojiPath =
 final _wireEmoji = RegExp(r'\[\[bt-emoji:([0-9]{3}|[1-9][0-9]{3})\]\]');
 final _editorEmoji = RegExp('[\uE000-\uF8FF]');
 const inlineEmojiScale = 1.1;
+const customEmojiDisplayGrowth = 1.1;
+const inlineCustomEmojiScale = inlineEmojiScale * customEmojiDisplayGrowth;
 
 /// The pale greeting illustrations need more contrast at inline sizes.
 /// Keep the saturated icons, portraits, alpha and artwork dimensions intact.
@@ -947,7 +949,7 @@ TextSpan _draftEmojiSpans(BuildContext context, TextSpan spans) {
   if (indices.length < 2) return spans;
   final style = DefaultTextStyle.of(context).style.merge(spans.style);
   final size = ((style.fontSize ?? 14) * 1.35).clamp(18.0, 24.0).toDouble() *
-      inlineEmojiScale;
+      inlineCustomEmojiScale;
   final render = _draftEditable(context);
   final width = _draftEmojiWidth(render);
   final scaler = render?.textScaler ?? MediaQuery.textScalerOf(context);
@@ -1016,7 +1018,7 @@ TextSpan _emojiSpans(
   final effectiveStyle = DefaultTextStyle.of(context).style.merge(style);
   final size =
       ((effectiveStyle.fontSize ?? 14) * 1.35).clamp(18.0, 24.0).toDouble() *
-          inlineEmojiScale;
+          inlineCustomEmojiScale;
   final spans = <InlineSpan>[];
   void addRun(String runText, TextStyle? runStyle, int sourceOffset) {
     var offset = 0;

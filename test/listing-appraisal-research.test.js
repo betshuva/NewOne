@@ -97,7 +97,8 @@ test('an appraisal with supplied product details requires web research and a con
   assert.ok(answer.split(/\s+/).length <= 90);
 });
 
-test('a provider cannot replace the required search with an unsupported final verdict', async () => {
+test('an incomplete mandatory search preserves provider prose and removes invented links', async () => {
+  const conclusion = 'EARLY_NO_COMPARISON לפני החלטה כדאי לברר את גרסת הרכב ואת מצבו.';
   let loaded = false;
   let afterLoad = 0;
   const answer = await generateSafeInformationAnswer({
@@ -108,13 +109,12 @@ test('a provider cannot replace the required search with an unsupported final ve
       if (!loaded) return response([lookup()]);
       afterLoad++;
       assert.ok(isForcedWeb(body));
-      return response([message('EARLY_NO_COMPARISON המחיר כדאי כי מחיר השוק הוא 999,999 ש״ח.')]);
+      return response([message(`${conclusion} https://invented.example.test/vito`)]);
     },
   });
   assert.equal(afterLoad, 1, 'the required attempt is bounded when the provider fails to run its tool');
-  assert.match(answer, /70,000/);
-  assert.match(answer, /השוואת מחיר/);
-  assert.doesNotMatch(answer, /EARLY_NO_COMPARISON|999,999|המחיר כדאי כי/);
+  assert.ok(answer.includes(conclusion));
+  assert.doesNotMatch(answer, /https?:|invented\.example\.test/);
 });
 
 test('a current listing price follow-up reloads only its subject before mandatory comparison', async () => {
@@ -307,7 +307,8 @@ for (const [name, failure] of [
   });
 }
 
-test('a completed comparison without usable evidence withholds its verdict and preserves known facts', async () => {
+test('a completed comparison without usable sources preserves provider prose and removes invented links', async () => {
+  const conclusion = 'UNVERIFIED_VERDICT יש לברר את התאמת גרסת הרכב ואת היסטוריית הטיפולים לפני החלטה.';
   let loaded = false;
   const answer = await generateSafeInformationAnswer({
     apiKey: 'test', question: appraisal(currentId),
@@ -318,13 +319,12 @@ test('a completed comparison without usable evidence withholds its verdict and p
       assert.ok(isForcedWeb(body));
       return response([
         { type: 'web_search_call', status: 'completed', action: { type: 'search', sources: [] } },
-        message('UNVERIFIED_VERDICT המחיר כדאי כי מחיר השוק הוא 999,999 ש״ח.'),
+        message(`${conclusion} https://invented.example.test/vito`),
       ]);
     },
   });
-  assert.match(answer, /70,000/);
-  assert.match(answer, /מנוע וגיר/);
-  assert.doesNotMatch(answer, /UNVERIFIED_VERDICT|999,999|המחיר כדאי כי|https?:|קישורים/);
+  assert.ok(answer.includes(conclusion));
+  assert.doesNotMatch(answer, /https?:|invented\.example\.test|קישורים/);
 });
 
 test('a listing search with a price filter remains a results list rather than a compulsory appraisal', async () => {

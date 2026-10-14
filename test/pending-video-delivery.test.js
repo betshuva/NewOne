@@ -17,7 +17,7 @@ const ALL = { text: true, video: true, nonHumanImages: true, men: true, women: t
 async function retry({ cached = false, result = approved, stopped = false,
   isContact = true, contentAllowed = true, group = false, type = 'video', blockedRecipient = false, teenAllowed = true, realSenderGuard = false,
   listing = false, listingProof = { durationSeconds: 9, source: VIDEO_PROBE_VERSION },
-  standalone = false, senderFilter = ALL } = {}) {
+  standalone = false, senderFilter = ALL, activeGroup = false, runTwice = false } = {}) {
   const row = { id: 103, retry_count: 0, created_at: new Date(), file_type: type,
     file_name: 'clip.mp4', mime_type: 'video/mp4', file_url: '/uploads/clip.mp4',
     stored_file_id: 'file', storage_path: 'clip.mp4', file_size: 5, user_id: 'sender',
@@ -49,7 +49,7 @@ async function retry({ cached = false, result = approved, stopped = false,
     }
     if (q.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [] };
     if (q.startsWith('SELECT 1 FROM user_contacts')) return { rows: isContact ? [{}] : [] };
-    if (q.startsWith('SELECT id,created_at FROM message_requests')) return { rows: [] };
+    if (q.startsWith('SELECT id,created_at,body,file_name FROM message_requests')) return { rows: [] };
     if (q.startsWith('INSERT INTO message_requests')) { events.push('request'); return { rows: [{ id: 'request', created_at: new Date() }] }; }
     if (q.startsWith('SELECT id FROM users')) return { rows: [{ id: row.user_id }] };
     if (q.startsWith('UPDATE stored_files')) {
@@ -61,8 +61,11 @@ async function retry({ cached = false, result = approved, stopped = false,
         : q.includes("moderation_status='rejected'") ? 'reject' : 'approve');
       return { rows: [] };
     }
+    if (q.startsWith('UPDATE messages SET delivery_summary')) return { rows: [] };
+    if (q.startsWith('SELECT gm.role')) return { rows: activeGroup
+      ? [{ role: 'member', send_permission: 'all', group_name: 'group', sender_name: 'sender' }] : [] };
     if (q.startsWith('INSERT INTO messages')) {
-      assert.equal(values[1], 'recipient');
+      assert.equal(values[1], group ? 'group' : 'recipient');
       process.env.MESSAGE_ENCRYPTION_KEY ||= 'test-message-encryption-key-at-least-32-bytes';
       const encrypted = require('../server/message-at-rest').encryptedQueryValues(q, values);
       assert.match(encrypted[3], /^enc:v1:/);
@@ -89,7 +92,8 @@ async function retry({ cached = false, result = approved, stopped = false,
     UPLOAD_ROOT: '/missing-local-media', UPLOAD_PUBLIC_BASE: '/uploads',
     fs: { stat: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); } },
     path: require('node:path'), VIDEO_SCAN_VERSION: 'test-current',
-    MODERATION_CACHE_VERSION: 'test-current', SCAN_BOT_ID: 'bot', SYSTEM_USER_ID: 'guide', SAFE_INFORMATION_USER_ID: 'info',
+    MODERATION_CACHE_VERSION: 'test-current', ANIMATED_SCAN_VERSION: 'test-animated20',
+    SCAN_BOT_ID: 'bot', SYSTEM_USER_ID: 'guide', SAFE_INFORMATION_USER_ID: 'info',
     async readSourceMedia(db, root, file) {
       assert.equal(db, pool); assert.equal(root, '/missing-local-media');
       assert.equal(file.id, 'file'); assert.equal(file.user_id, 'sender');
@@ -97,6 +101,10 @@ async function retry({ cached = false, result = approved, stopped = false,
     },
     async scanVideo(bytes) {
       assert.equal(bytes.toString(), 'video'); events.push('scan');
+      return structuredClone(result);
+    },
+    async scanImage(bytes) {
+      assert.equal(bytes.toString(), 'video'); events.push('scan-image');
       return structuredClone(result);
     },
     async runBoundedVideoScan(bytes, name, mime, options) {
@@ -118,11 +126,13 @@ async function retry({ cached = false, result = approved, stopped = false,
     assertSenderMediaAllowed: async (db,options) => { events.push('sender-policy');
       if (realSenderGuard) return require('../server/sender-content-filter').assertSenderMediaAllowed(db,options); },
     getEffectiveRecipientFilter: async () => ({ isContact, filter: { video: true } }),
-    getGroupContentFilter: async () => null,
+    getGroupContentFilter: async () => activeGroup ? ALL : null,
     contentAllowedByFilter: () => contentAllowed,
     recordFilterDecision: async (db, decision) => decisions.push(decision),
     notifyDestinationFilterBlock: async () => events.push('filter-notice'),
     notifyRejectedSend: async () => events.push('rejection-notice'),
+    buildGroupDeliveryPlan: async () => ({ summary: { deliveredCount: 0, blockedCount: 0 }, delivered: [] }),
+    notifyGroupFilterBlocks: async () => {},
     assertSenderFileAllowed: async (db,userId,fileUrl,contextType,contextId,source) => {
       events.push('sender-policy-at-commit');
       if (realSenderGuard) return require('../server/sender-content-filter').assertSenderMediaAllowed(db,{userId,contextType,contextId,type,classification:approved.classification,source}); },
@@ -131,6 +141,7 @@ async function retry({ cached = false, result = approved, stopped = false,
     console: { error(...args) { errors.push(args); } },
   });
   await run();
+  if (runTwice) await run();
   assert.deepEqual(errors, []);
   return { events, queued, rejections, decisions, savedDetails };
 }
@@ -235,6 +246,17 @@ test('listing video exemption never overrides a failed safety scan or an incompl
   }
 });
 
+test('an approved animated image is delivered to its group once across queue retries', async () => {
+  const result = { ...approved, animated: true, classification: {
+    category: 'nonHumanImages', detectedCategories: ['nonHumanImages'], uncertain: false } };
+  const state = await retry({ cached: true, group: true, activeGroup: true,
+    type: 'image', result, runTwice: true });
+  assert.equal(state.queued, false);
+  assert.equal(state.events.filter(event => event === 'message').length, 1);
+  assert.ok(!state.events.includes('scan-image'));
+  assert.ok(!state.events.includes('read-storage'));
+});
+
 test('an approved queued video finishes delivery without another scan or storage read', async () => {
   const state = await retry({ cached: true });
   assert.equal(state.queued, false);
@@ -247,6 +269,22 @@ test('an unresolved video stays queued and sends no message or notification', as
   const state = await retry({ result: { pending: true, blocked: false } });
   assert.equal(state.queued, true);
   assert.deepEqual(state.events, ['read-storage', 'scan']);
+});
+
+test('animation retries persist the sampling version without changing still-image versions', async () => {
+  for (const animated of [false, true]) {
+    for (const pending of [false, true]) {
+      const result = { blocked: false, pending, ...(animated ? { animated: true,
+        frameCount: 37, sampledFrames: 20, framesScanned: pending ? 2 : 20 } : {}),
+      classification: { category: 'nonHumanImages', detectedCategories: ['nonHumanImages'], uncertain: false } };
+      const state = await retry({ type: 'image', result, standalone: true });
+      assert.equal(state.savedDetails.moderationVersion, animated ? 'test-animated20' : 'test-current');
+      assert.equal(state.queued, pending);
+      assert.ok(state.events.includes('scan-image'));
+      assert.ok(!state.events.includes('message'));
+      if (animated) assert.equal(state.savedDetails.frameCount, 37);
+    }
+  }
 });
 
 test('a budget-stopped video is removed from the queue without approval or delivery', async () => {

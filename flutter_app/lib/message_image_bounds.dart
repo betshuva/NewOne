@@ -1,3 +1,4 @@
+import 'chat_design_settings.dart';
 import 'package:flutter/widgets.dart';
 
 /// Portrait camera photos need enough height to remain readable in a chat.
@@ -9,7 +10,13 @@ Size chatImageMaxSize({bool group = false, String? fileName}) {
       name.startsWith('sticker_') ||
       name.startsWith('betshuva_');
   if (sticker) return group ? const Size(200, 160) : const Size(220, 180);
-  return group ? const Size(200, 360) : const Size(220, 380);
+  final design = ChatDesignStore.shared.value;
+  final width = design.number('mediaMaxWidth', 220);
+  final height = name.endsWith('.gif')
+      ? design.number('gifMaxHeight', 220)
+      : design.number('mediaMaxHeight', 380);
+  return Size(
+      group ? width * 200 / 220 : width, group ? height * 360 / 380 : height);
 }
 
 /// Keeps a decoded image's aspect ratio without adding a letterboxed frame.

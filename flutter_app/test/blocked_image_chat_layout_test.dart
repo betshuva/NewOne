@@ -138,7 +138,7 @@ void main() {
       final png = base64Decode(
           'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH9sAAAAASUVORK5CYII=');
       final preview = find.byKey(const ValueKey('blocked-image-preview'));
-      final menu = find.byKey(const ValueKey('blocked-image-menu'));
+      final menu = find.text('לא נשלחה — הגדרות סינון');
       final details = find.byType(AlertDialog);
       final marker = find.byKey(const ValueKey('blocked-image-marker'));
 
@@ -168,25 +168,19 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 400));
 
-        expect(preview, findsOneWidget);
+        expect(preview, findsNothing);
         expect(marker, findsOneWidget);
         expect(find.byIcon(Icons.filter_alt_outlined), findsOneWidget);
         expect(find.byIcon(Icons.zoom_in), findsNothing);
-        expect(
-            find.descendant(
-                of: preview, matching: find.text('לא נשלחה — הגדרות סינון')),
-            findsOneWidget);
+        expect(menu, findsOneWidget);
         expect(details, findsNothing);
         expect(find.textContaining(reason), findsNothing);
         expect(find.text(filename), findsNothing);
-        expect(tester.getRect(preview).right, greaterThan(1100));
-        expect(tester.getRect(menu).right,
-            lessThanOrEqualTo(tester.getRect(preview).left));
-
-        await tester.tap(menu);
+        await tester.longPress(menu);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 400));
-        expect(find.byKey(const ValueKey('message-options-menu')), findsOneWidget);
+        expect(
+            find.byKey(const ValueKey('message-options-menu')), findsOneWidget);
         expect(find.text('העבר'), findsOneWidget);
         expect(find.text('העתק תמונה'), findsOneWidget);
         expect(find.text('סריקה נוספת'), findsNothing);
@@ -202,10 +196,11 @@ void main() {
         await tester.pump(const Duration(milliseconds: 400));
         expect(find.textContaining(reason), findsNothing);
 
-        await tester.tap(menu);
+        await tester.longPress(menu);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 400));
-        expect(find.byKey(const ValueKey('message-options-menu')), findsOneWidget);
+        expect(
+            find.byKey(const ValueKey('message-options-menu')), findsOneWidget);
         expect(find.text('העבר'), findsOneWidget);
         expect(find.text('בחר כמה פריטים'), findsOneWidget);
         expect(find.text('מחק אצלי'), findsOneWidget);

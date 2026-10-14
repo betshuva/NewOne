@@ -24,10 +24,11 @@ const RELEASE_WHERE_SQL = `(s.enabled=TRUE OR to_jsonb(sf)->>'storage_tier'='per
   AND sf.released_at IS NULL AND sf.release_scheduled_at<=now()
   AND NOT EXISTS (SELECT 1 FROM pending_scans ps WHERE ps.file_url=sf.public_url)`;
 
-async function verifiedCloudBytes(row) {
+async function verifiedCloudBytes(row, checkpointRoot) {
   const token = drive.decryptRefreshToken(row.encrypted_refresh_token, row.user_id);
   const encrypted = await drive.downloadAppDataFile(token, row.remote_file_id,
-    Number(row.file_size) + 1024);
+    Number(row.file_size) + 1024, { checkpointRoot, ownerKey: row.user_id,
+      expectedBytes: Number(row.file_size), expectedSha256: row.encrypted_sha256 });
   if (crypto.createHash('sha256').update(encrypted).digest('hex') !== row.encrypted_sha256)
     throw new Error('Cloud ciphertext checksum mismatch; local copy retained');
   const metadata = typeof row.encryption_metadata === 'string'
@@ -69,7 +70,8 @@ async function releaseLocalMediaBatch({ pool, uploadRoot, limit = 10,
         if (!real.startsWith(root + path.sep)) throw new Error('Invalid release symlink');
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
       // A historical verification is insufficient if the remote file disappeared.
-      plain = await verifiedCloudBytes(row);
+      plain = await verifiedCloudBytes(row,
+        path.join(uploadRoot, '..', '.transfer-state', 'restore-downloads'));
       try { await fs.unlink(absolutePath); removed = true; }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
       await client.query('UPDATE stored_files SET released_at=now() WHERE id=$1', [row.id]);
@@ -83,11 +85,17 @@ async function releaseLocalMediaBatch({ pool, uploadRoot, limit = 10,
         await fs.writeFile(absolutePath, plain, { flag: 'wx', mode: 0o600 })
           .catch(restoreError => { if (restoreError.code !== 'EEXIST') throw restoreError; });
       }
-      result.failed++;
-      // A broken backup must not starve later files or spin on the Drive API.
-      await client.query(`UPDATE stored_files SET release_scheduled_at=now()+INTERVAL '5 minutes'
-        WHERE id=$1 AND released_at IS NULL`, [candidate.id]).catch(() => {});
-      onError(candidate.id, error);
+      if (error.code === 'DRIVE_DOWNLOAD_IN_PROGRESS') {
+        result.pending = (result.pending || 0) + 1;
+        await client.query(`UPDATE stored_files SET release_scheduled_at=now()+INTERVAL '10 seconds'
+          WHERE id=$1 AND released_at IS NULL`, [candidate.id]).catch(() => {});
+      } else {
+        result.failed++;
+        // A broken backup must not starve later files or spin on the Drive API.
+        await client.query(`UPDATE stored_files SET release_scheduled_at=now()+INTERVAL '5 minutes'
+          WHERE id=$1 AND released_at IS NULL`, [candidate.id]).catch(() => {});
+        onError(candidate.id, error);
+      }
     } finally { client.release(); }
     if (committed) onReleased(row, plain.length);
   }

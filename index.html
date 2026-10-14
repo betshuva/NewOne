@@ -159,7 +159,7 @@
     };
     retryButton.addEventListener('click', () => window.location.reload());
     const entryScript = document.createElement('script');
-    entryScript.src = 'entry-route.js?v=20261013112240';
+    entryScript.src = 'entry-route.js?v=1a09fc501960ea1c';
     entryScript.onerror = showLaunchError;
     entryScript.onload = () => {
       let storedToken;
@@ -173,7 +173,7 @@
       if (route.url !== window.location.href) window.history.replaceState(null, '', route.url);
       const loader = window.betshuvaEntryRoute.createAppLoader({
         window, document, ready: window.betshuvaWebReady,
-        bootstrapSrc: new URL('flutter_bootstrap.js?v=20261013112240', document.baseURI).href,
+        bootstrapSrc: new URL('flutter_bootstrap.js?v=1a09fc501960ea1c', document.baseURI).href,
         onReady: () => { launchShell.hidden = true; },
         onError: showLaunchError
       });

@@ -1,3 +1,4 @@
+import 'helpers/chat_upload_picker_browser.dart';
 import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'helpers/attachment_picker.dart';
@@ -37,6 +38,11 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       final previousPicker = FilePicker.platform;
+      final browserPicker = ChatUploadPickerBrowser();
+      if (kIsWeb) {
+        browserPicker.installCancelledSelection();
+        addTearDown(browserPicker.dispose);
+      }
       final picker = AttachmentPicker([]);
       FilePicker.platform = picker;
       addTearDown(() => FilePicker.platform = previousPicker);
@@ -59,7 +65,9 @@ void main() {
         ));
         await tester.pumpAndSettle();
         final chatState = tester.state(find.byType(ChatScreen));
-        for (final label in ['צילום', 'העלאת קבצים']) {
+        // Native camera mocks do not implement the browser camera surface.
+        for (final label
+            in kIsWeb ? ['העלאת קבצים'] : ['צילום', 'העלאת קבצים']) {
           await tester.tap(find.byIcon(Icons.attach_file));
           await tester.pumpAndSettle();
           expect(find.text('העלאת קבצים'), findsOneWidget);
@@ -86,7 +94,7 @@ void main() {
           expect(tester.state(find.byType(ChatScreen)), same(chatState));
           expect(tester.takeException(), isNull);
         }
-        expect(picker.calls, 1);
+        expect(kIsWeb ? browserPicker.selections : picker.calls, 1);
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pumpAndSettle();
       },

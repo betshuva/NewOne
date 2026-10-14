@@ -24,6 +24,7 @@ test('automatic local release verifies live cloud bytes and preserves active ref
   const remote = new Map();
   t.mock.method(drive, 'downloadAppDataFile', async (_token, id) => {
     if (!remote.has(id)) throw new Error('Remote file unavailable');
+    if (remote.get(id) instanceof Error) throw remote.get(id);
     return remote.get(id);
   });
   const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -127,6 +128,28 @@ test('automatic local release verifies live cloud bytes and preserves active ref
         assert.equal((await run()).examined, 0);
       });
     }
+    await t.test('partial cloud download keeps local bytes until a fresh completed verification releases them', async () => {
+      await seed();
+      const ciphertext = remote.get('remote');
+      const beforeErrors = errors.length;
+      remote.set('remote', Object.assign(new Error('Download made checkpoint progress'),
+        { name: 'TimeoutError', code: 'DRIVE_DOWNLOAD_IN_PROGRESS' }));
+      const result = await run();
+      assert.equal(result.pending, 1);
+      assert.equal(result.failed, 0);
+      assert.equal(result.released, 0);
+      assert.equal(errors.length, beforeErrors);
+      assert.deepEqual(await fs.readFile(file), plain);
+      const state = (await db.query(`SELECT released_at,release_scheduled_at,
+        now() AS current_time FROM stored_files`)).rows[0];
+      assert.equal(state.released_at, null);
+      const delay = state.release_scheduled_at - state.current_time;
+      assert.ok(delay > 0 && delay <= 10000, 'partial progress is retried after ten seconds');
+      remote.set('remote', ciphertext);
+      await db.query("UPDATE stored_files SET release_scheduled_at=now()-interval '1 second'");
+      assert.equal((await run()).released, 1);
+      await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+    });
     await t.test('failed database update restores the local bytes', async () => {
       await seed(); failUpdate = true;
       assert.equal((await run()).failed, 1);

@@ -302,8 +302,8 @@ void main() {
     expect((image.image as NetworkImage).url,
         'https://betshuva.com/betshuva-app/api/expressions/emoji/1');
     final size = tester.getSize(imageFinder);
-    expect(size.width, closeTo(23.76, 0.1));
-    expect(size.height, closeTo(23.76, 0.1));
+    expect(size.width, closeTo(23.76 * 1.1, 0.1));
+    expect(size.height, closeTo(23.76 * 1.1, 0.1));
     final before = editable.renderEditable
         .getLocalRectForCaret(const TextPosition(offset: 2));
     final after = editable.renderEditable
@@ -371,12 +371,12 @@ void main() {
         tester
             .getSize(find.byKey(const ValueKey('inline-custom-emoji-1')))
             .width,
-        closeTo(19.8, 0.001));
+        closeTo(19.8 * 1.1, 0.001));
     expect(
         tester
             .getSize(find.byKey(const ValueKey('inline-custom-emoji-150')))
             .width,
-        closeTo(26.4, 0.001));
+        closeTo(26.4 * 1.1, 0.001));
     expect(find.bySemanticsLabel(RegExp('שמחה')), findsOneWidget);
     expect(find.textContaining('[[bt-emoji:'), findsNothing);
     semantics.dispose();

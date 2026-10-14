@@ -140,6 +140,27 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('collapsed delivery details do not reserve bubble height',
+      (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body:
+      Align(alignment: Alignment.topRight, child: MessageHover(child:
+        Column(mainAxisSize: MainAxisSize.min, children: [
+          SizedBox(width: 200, height: 24, child: Text('message')),
+          MessageDetails(maintainSize: false,
+            child: SizedBox(width: 200, height: 70, child: Text('delivery'))),
+        ]))))));
+    expect(tester.getSize(find.byType(MessageHover)).height, 24);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: const Offset(1, 500));
+    await mouse.moveTo(tester.getCenter(find.text('message')));
+    await tester.pump();
+    expect(tester.getSize(find.byType(MessageHover)).height, 94);
+    await mouse.moveTo(const Offset(1, 500));
+    await tester.pump();
+    expect(tester.getSize(find.byType(MessageHover)).height, 24);
+    await mouse.removePointer();
+  });
+
   testWidgets('hover never resizes an object or moves the next message',
       (tester) async {
     await tester.pumpWidget(MaterialApp(

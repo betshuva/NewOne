@@ -106,12 +106,18 @@ class _Fixture {
 }
 
 Widget _view(_Fixture fixture,
-        {String token = _token, String message = _message}) =>
+        {String token = _token,
+        String message = _message,
+        double textScale = 1}) =>
     RepaintBoundary(
       key: fixture.capture,
       child: DefaultAssetBundle(
         bundle: _ReactionAssets(),
         child: MaterialApp(
+          builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context)
+                  .copyWith(textScaler: TextScaler.linear(textScale)),
+              child: child!),
           home: Scaffold(
             body: Directionality(
               textDirection: TextDirection.rtl,
@@ -141,8 +147,8 @@ Finder get _more => find.byKey(const ValueKey('more-message-reactions'));
 Finder get _library => find.byKey(const ValueKey('message-reaction-library'));
 
 Future<void> _open(WidgetTester tester, _Fixture fixture,
-    {String emoji = '🙏'}) async {
-  await tester.pumpWidget(_view(fixture));
+    {String emoji = '🙏', double textScale = 1}) async {
+  await tester.pumpWidget(_view(fixture, textScale: textScale));
   await tester.pumpAndSettle();
   await tester.tap(_badge(emoji));
   await tester.pumpAndSettle();
@@ -163,6 +169,68 @@ void main() {
   setUpAll(() async {
     _reactionLibraryCatalog =
         await rootBundle.loadString('assets/stickers/user-catalog.json');
+  });
+
+  testWidgets(
+      'star filters and actor names remain separate at 320px and 200 percent text',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 568);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const one = '[[bt-emoji:027]]';
+    const two = '[[bt-emoji:133]]';
+    final fixture = _Fixture(users: [
+      _person('own', 'אני', one, mine: true),
+      _person('friend-one', 'שם ארוך של חברה עם כוכב', two),
+      _person('friend-two', 'חבר נוסף עם כוכב', two),
+    ]);
+    await _open(tester, fixture, emoji: one, textScale: 2);
+    await _showAll(tester);
+    final dialog = tester.getRect(_details);
+    expect(dialog.left, greaterThanOrEqualTo(0));
+    expect(dialog.right, lessThanOrEqualTo(320));
+    for (final entry in [(one, 27, '1'), (two, 133, '2')]) {
+      final chip = tester.getRect(_filter(entry.$1));
+      final artwork = tester.getRect(find.descendant(
+          of: _filter(entry.$1),
+          matching: find.byKey(ValueKey('inline-custom-emoji-${entry.$2}'))));
+      final count = tester.getRect(find.descendant(
+          of: _filter(entry.$1), matching: find.text(entry.$3)));
+      expect(artwork.overlaps(count), isFalse);
+      expect(count.right, lessThanOrEqualTo(artwork.left));
+      expect(artwork.left, greaterThanOrEqualTo(chip.left));
+      expect(artwork.right, lessThanOrEqualTo(chip.right));
+      expect(artwork.top, greaterThanOrEqualTo(chip.top));
+      expect(artwork.bottom, lessThanOrEqualTo(chip.bottom));
+      expect(chip.left, greaterThanOrEqualTo(dialog.left));
+      expect(chip.right, lessThanOrEqualTo(dialog.right));
+    }
+    for (final entry in [
+      ('own', 27, 'את/ה'),
+      ('friend-one', 133, 'שם ארוך של חברה עם כוכב')
+    ]) {
+      await tester.scrollUntilVisible(_personRow(entry.$1), 60,
+          scrollable: find
+              .descendant(of: _details, matching: find.byType(Scrollable))
+              .first);
+      await tester.pumpAndSettle();
+      final row = tester.getRect(_personRow(entry.$1));
+      final artwork = tester.getRect(find.descendant(
+          of: _personRow(entry.$1),
+          matching: find.byKey(ValueKey('inline-custom-emoji-${entry.$2}'))));
+      final name = tester.getRect(find.descendant(
+          of: _personRow(entry.$1), matching: find.text(entry.$3)));
+      expect(artwork.overlaps(name), isFalse);
+      expect(artwork.right, lessThanOrEqualTo(name.left));
+      expect(artwork.left, greaterThanOrEqualTo(row.left));
+      expect(artwork.right, lessThanOrEqualTo(row.right));
+      expect(artwork.top, greaterThanOrEqualTo(row.top));
+      expect(artwork.bottom, lessThanOrEqualTo(row.bottom));
+    }
+    expect(fixture.writes, isEmpty);
+    expect(tester.takeException(), isNull);
+    await _dispose(tester, fixture);
   });
 
   testWidgets('opening details shows names and counts without a reaction write',
@@ -269,7 +337,8 @@ void main() {
     await _dispose(tester, fixture);
   });
 
-  testWidgets('custom actor artwork keeps 24px size and foreign rows read only',
+  testWidgets(
+      'custom actor artwork fits enlarged frames and foreign rows read only',
       (tester) async {
     const first = '[[bt-emoji:001]]';
     const last = '[[bt-emoji:150]]';
@@ -286,8 +355,25 @@ void main() {
           of: _personRow(entry.$1),
           matching: find.byKey(ValueKey('inline-custom-emoji-${entry.$2}')));
       expect(artwork, findsOneWidget);
-      expect(tester.getSize(artwork).width, closeTo(24, .001));
-      expect(tester.getSize(artwork).height, closeTo(24, .001));
+      final glyph = tester.getRect(artwork);
+      final row = tester.getRect(_personRow(entry.$1));
+      expect(glyph.width, closeTo(29.04, .001));
+      expect(glyph.height, closeTo(29.04, .001));
+      expect(glyph.left, greaterThanOrEqualTo(row.left));
+      expect(glyph.right, lessThanOrEqualTo(row.right));
+      expect(glyph.top, greaterThanOrEqualTo(row.top));
+      expect(glyph.bottom, lessThanOrEqualTo(row.bottom));
+      final token = entry.$2 == 1 ? first : last;
+      final filter = tester.getRect(_filter(token));
+      final filterGlyph = tester.getRect(find.descendant(
+          of: _filter(token),
+          matching: find.byKey(ValueKey('inline-custom-emoji-${entry.$2}'))));
+      expect(filterGlyph.width, closeTo(24.2, .001));
+      expect(filterGlyph.height, closeTo(24.2, .001));
+      expect(filterGlyph.left, greaterThanOrEqualTo(filter.left));
+      expect(filterGlyph.right, lessThanOrEqualTo(filter.right));
+      expect(filterGlyph.top, greaterThanOrEqualTo(filter.top));
+      expect(filterGlyph.bottom, lessThanOrEqualTo(filter.bottom));
     }
     await tester.tap(_personRow('friend'));
     await tester.pumpAndSettle();

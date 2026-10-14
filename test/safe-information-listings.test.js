@@ -74,11 +74,11 @@ test('consulted source metadata does not excuse an invented plain link in a list
     validateSource: async () => assert.fail('an invented source must not be validated'),
     fetchImpl: async () => response([
       searchCompleted([{ url: 'https://manufacturer.example.test/fridge', title: 'יצרן' }]),
-      message('UNVERIFIED_PRICE 9999 https://invented.example.test/fridge'),
+      message('פרטי ההשוואה שהוחזרו: 9999 ש״ח. https://invented.example.test/fridge'),
     ]),
   });
-  assert.doesNotMatch(answer, /UNVERIFIED_PRICE|9999|https?:|קישורים|מקורות/);
-  assert.match(answer, /אין כרגע מספיק נתונים/);
+  assert.match(answer, /פרטי ההשוואה שהוחזרו: 9999/);
+  assert.doesNotMatch(answer, /https?:|קישורים|מקורות/);
 });
 
 test('consulted sources cannot replace a rejected citation in a listing answer', async () => {
@@ -87,13 +87,13 @@ test('consulted sources cannot replace a rejected citation in a listing answer',
     validateSource: async () => assert.fail('a blocked citation must not be replaced with unrelated evidence'),
     fetchImpl: async () => response([
       searchCompleted([{ url: 'https://manufacturer.example.test/fridge', title: 'יצרן' }]),
-      message('UNVERIFIED_PRICE 9999', [{
+      message('פרטי ההשוואה שהוחזרו: 9999 ש״ח.', [{
         type: 'url_citation', url: 'https://www.facebook.com/fridge', title: 'רשת חברתית',
       }]),
     ]),
   });
-  assert.doesNotMatch(answer, /UNVERIFIED_PRICE|9999|https?:|קישורים|מקורות/);
-  assert.match(answer, /אין כרגע מספיק נתונים/);
+  assert.match(answer, /פרטי ההשוואה שהוחזרו: 9999/);
+  assert.doesNotMatch(answer, /https?:|facebook|קישורים|מקורות/);
 });
 
 test('internal listing results require web research for current price and product comparisons', async () => {
@@ -235,17 +235,17 @@ for (const [name, validateSource] of [
   ['rejects the listing URL', async () => false],
   ['cannot complete', async () => { throw new Error('offline'); }],
 ]) {
-  test(`internet listing claims are withheld when link validation ${name}`, async () => {
+  test(`internet listing prose survives when link validation ${name}`, async () => {
     const sourceUrl = 'https://example.test/listing/fridge';
     const answer = await generateSafeInformationAnswer({
       apiKey: 'test', question: 'חפש באינטרנט מודעות למקרר', validateSource,
       fetchImpl: async () => response([
         searchCompleted([{ url: sourceUrl, title: 'מקרר' }]),
-        message(`UNVERIFIED_PRICE 500 ${sourceUrl}`),
+        message(`מקרר מוצע ב־500 ש״ח. ${sourceUrl}`),
       ]),
     });
-    assert.match(answer, /אין כרגע מספיק נתונים/);
-    assert.doesNotMatch(answer, /UNVERIFIED_PRICE|500|https?:|קישורים|מקורות/);
+    assert.match(answer, /מקרר מוצע ב־500/);
+    assert.doesNotMatch(answer, /https?:|קישורים|מקורות/);
     assert.ok(answer.length <= 600);
   });
 
@@ -261,20 +261,20 @@ for (const [name, validateSource] of [
         ? response([searchCall('listing', { listing_id: firstId })])
         : response([
           searchCompleted([{ url: sourceUrl, title: 'חנות לדוגמה' }]),
-          message(`UNVERIFIED_PRICE 9999 ש״ח. בתמונה נראית שריטה בדלת. ${sourceUrl}`),
+          message(`מקרר ב־500 ש״ח. בתמונה נראית שריטה בדלת. ${sourceUrl}`),
         ]),
     });
     assert.equal(requests, 2);
     assert.deepEqual(validated, [sourceUrl]);
     assert.match(answer, /מקרר/);
     assert.match(answer, /500/);
-    assert.match(answer, /השוואת מחיר/);
-    assert.doesNotMatch(answer, /UNVERIFIED_PRICE|9999|שריטה|https?:|example\.test|חנות לדוגמה|קישורים|מקורות/);
+    assert.match(answer, /שריטה בדלת/);
+    assert.doesNotMatch(answer, /https?:|example\.test|חנות לדוגמה|קישורים|מקורות/);
     assert.ok(answer.length <= 600);
   });
 }
 
-test('a listing fallback uses only the newly opened listing even when the tool returned previous results', async () => {
+test('rejected web links preserve the current listing answer and its isolated conversation scope', async () => {
   let requests = 0;
   const sourceUrl = 'https://example.test/listing/fridge';
   const answer = await generateSafeInformationAnswer({
@@ -285,12 +285,16 @@ test('a listing fallback uses only the newly opened listing even when the tool r
       listing(firstId),
     ] }),
     validateSource: async () => false,
-    fetchImpl: async () => ++requests === 1
-      ? response([searchCall('listing', { listing_id: firstId })])
-      : response([
+    fetchImpl: async (_, request) => {
+      if (++requests === 1) {
+        assert.ok(!JSON.stringify(JSON.parse(request.body).input).includes(listingUrl(secondId)));
+        return response([searchCall('listing', { listing_id: firstId })]);
+      }
+      return response([
         searchCompleted([{ url: sourceUrl, title: 'חנות לדוגמה' }]),
-        message(`UNVERIFIED_PRICE 9999 ${sourceUrl}`),
-      ]),
+        message(`מקרר ב־500 ש״ח. ${listingUrl(firstId)} ${sourceUrl}`),
+      ]);
+    },
   });
   assert.match(answer, /מקרר/);
   assert.match(answer, /500/);
@@ -309,24 +313,24 @@ test('a rejected listing lookup cannot supply fallback listing facts', async () 
       ? response([searchCall('listing', { listing_id: firstId })])
       : response([
         searchCompleted([{ url: sourceUrl, title: 'חנות לדוגמה' }]),
-        message(`UNVERIFIED_PRICE 9999 ${sourceUrl}`),
+        message(`פרטי המודעה אינם זמינים כרגע. ${listingUrl(firstId)} ${sourceUrl}`),
       ]),
   });
-  assert.match(answer, /אין כרגע מספיק נתונים/);
+  assert.match(answer, /פרטי המודעה אינם זמינים/);
   assert.doesNotMatch(answer, /500|UNVERIFIED_PRICE|9999|https?:|betshuva:|קישורים|מקורות/);
 });
 
-test('general web answers still require citations when consulted sources alone are returned', async () => {
+test('general web answers retain prose when consulted sources provide no citation', async () => {
   const answer = await generateSafeInformationAnswer({
     apiKey: 'test', question: 'בדוק באינטרנט את שעות תחנת הרכבת',
     validateSource: async () => assert.fail('consulted sources alone are a listing-only fallback'),
     fetchImpl: async () => response([
       searchCompleted([{ url: 'https://rail.example.test/stations', title: 'רכבת' }]),
-      message('UNVERIFIED_HOURS 06:00'),
+      message('שעות תחנת הרכבת: 06:00.'),
     ]),
   });
-  assert.match(answer, /לא הצלחתי לאמת/);
-  assert.doesNotMatch(answer, /UNVERIFIED_HOURS|06:00/);
+  assert.match(answer, /שעות תחנת הרכבת: 06:00/);
+  assert.doesNotMatch(answer, /https?:|לא הצלחתי לאמת/);
 });
 
 test('listing photos are mapped to authorized listing links and follow all function outputs', async () => {
@@ -415,7 +419,7 @@ test('unavailable listing photos preserve the successful textual listing result'
   assert.match(answer, /500|התמונות לא זמינות/);
 });
 
-test('teen requests cannot load marketplace photos even if the provider requests the hidden tool', async () => {
+test('a supplied marketplace tool and photos are available regardless of the bot teen flag', async () => {
   let requests = 0;
   let marketplaceCalls = 0;
   let imageLoads = 0;
@@ -425,17 +429,21 @@ test('teen requests cannot load marketplace photos even if the provider requests
     loadMarketplaceImages: async () => { imageLoads++; return [photo(firstId)]; },
     fetchImpl: async (_, options) => {
       const body = JSON.parse(options.body);
-      assert.ok(!body.tools.some(tool => tool.name === 'search_marketplace'));
-      assert.equal(imagesIn(body.input).length, 0);
-      if (++requests === 1) return response([searchCall('forbidden', { listing_id: firstId })]);
-      assert.equal(JSON.parse(body.input.at(-1).output).error, 'SEARCH_FAILED');
-      return response([message('המודעות אינן זמינות לחשבון זה.')]);
+      assert.ok(body.tools.some(tool => tool.name === 'search_marketplace'));
+      if (++requests === 1) {
+        assert.equal(imagesIn(body.input).length, 0);
+        return response([searchCall('listing', { listing_id: firstId })]);
+      }
+      assert.equal(imagesIn(body.input).length, 1);
+      assert.equal(imagesIn(body.input)[0].image_url, photo(firstId).image_url);
+      return response([message(`המקרר מוצע ב־500 ש״ח. ${listingUrl(firstId)}`)]);
     },
   });
   assert.equal(requests, 2);
-  assert.equal(marketplaceCalls, 0);
-  assert.equal(imageLoads, 0);
-  assert.match(answer, /אינן זמינות/);
+  assert.equal(marketplaceCalls, 1);
+  assert.equal(imageLoads, 1);
+  assert.match(answer, /500/);
+  assert.ok(answer.includes(listingUrl(firstId)));
 });
 
 for (const [name, result] of [

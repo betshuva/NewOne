@@ -507,10 +507,10 @@ class _MessageReactionsState extends State<MessageReactions> {
   Widget _detailsEmoji(String emoji, double size) {
     if (_isCustomReaction(emoji)) {
       // Reuse the immutable, same-origin artwork and its Hebrew semantics.
-      // Inline text scales images by 1.35; compensate here to keep reactions
-      // at the exact 20px/24px glyph size regardless of text accessibility size.
+      // Match the frame to the inline artwork scale so custom reactions remain
+      // square and uncropped, regardless of text accessibility size.
       return SizedBox.square(
-        dimension: size,
+        dimension: size * inlineCustomEmojiScale,
         child: Center(
           child: MediaQuery.withNoTextScaling(
             child: InlineEmojiText(emoji,

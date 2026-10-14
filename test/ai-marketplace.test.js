@@ -70,11 +70,11 @@ test('listing searches offer web tools, keep verified listing links and omit sou
   assert.doesNotMatch(answer,/מקור|נבדק|09\/09\/2026|https:/);
 });
 
-test('teen has no marketplace tool even when a callback exists', async () => {
+test('legacy teen metadata does not hide a provided marketplace tool', async () => {
   await generateSafeInformationAnswer({apiKey:'test',isTeen:true,question:'מקרר למסירה',
     searchMarketplace: async () => { throw new Error('must not run'); },
     fetchImpl: async (_, options) => {
-      assert.ok(!JSON.parse(options.body).tools.some(tool => tool.name === 'search_marketplace'));
+      assert.ok(JSON.parse(options.body).tools.some(tool => tool.name === 'search_marketplace'));
       return {ok:true,json:async()=>({output:[{content:[{type:'output_text',text:'הלוח אינו זמין לחשבון זה'}]}]})};
     }});
 });

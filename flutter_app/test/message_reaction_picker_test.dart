@@ -47,17 +47,26 @@ void main() {
     _bundledCatalog =
         await rootBundle.loadString('assets/stickers/user-catalog.json');
   });
-  testWidgets('library keeps all 150 IDs and renders colored 32px artwork',
+  testWidgets('library preserves IDs and renders enlarged selectable artwork',
       (tester) async {
     await _show(tester, selectedEmoji: '[[bt-emoji:001]]');
     final grid = tester.widget<SliverGrid>(
         find.byKey(const ValueKey('message-reaction-library-grid')));
-    expect((grid.delegate as SliverChildBuilderDelegate).childCount, 150);
+    expect((grid.delegate as SliverChildBuilderDelegate).childCount, 148);
     final first = find.byKey(const ValueKey('reaction-library-emoji-001'));
     final image = tester.widget<Image>(
         find.descendant(of: first, matching: find.byType(Image)));
-    expect(image.width, 32);
-    expect(image.height, 32);
+    expect(image.width, closeTo(35.2, .001));
+    expect(image.height, closeTo(35.2, .001));
+    final artwork = tester
+        .getRect(find.descendant(of: first, matching: find.byType(Image)));
+    final hit = tester.getRect(first);
+    expect(artwork.width, closeTo(35.2, .001));
+    expect(artwork.height, closeTo(35.2, .001));
+    expect(artwork.left, greaterThanOrEqualTo(hit.left));
+    expect(artwork.right, lessThanOrEqualTo(hit.right));
+    expect(artwork.top, greaterThanOrEqualTo(hit.top));
+    expect(artwork.bottom, lessThanOrEqualTo(hit.bottom));
     expect(
         (image.image as NetworkImage).url,
         'https://betshuva.com/betshuva-app/expression-library/'
@@ -88,7 +97,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('clear search restores all IDs and cancel returns no selection',
+  testWidgets('clear search restores choices and cancel returns no selection',
       (tester) async {
     var completed = false;
     String? selected = 'unchanged';
@@ -127,6 +136,33 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('retired houses are hidden while remaining greeting keeps its ID',
+      (tester) async {
+    String? selected;
+    await _show(tester,
+        selectedEmoji: '[[bt-emoji:041]]',
+        onResult: (result) => selected = result);
+    final bundled = jsonDecode(_bundledCatalog) as Map;
+    final labels = bundled['categories'][0]['labels'] as List;
+    expect(labels, hasLength(150));
+    expect(labels[40], 'בית');
+    expect(labels[96], 'הבית של בתשובה');
+    await tester.enterText(find.byType(TextField), 'בית');
+    await tester.pumpAndSettle();
+    expect(
+        find.byKey(const ValueKey('reaction-library-emoji-041')), findsNothing);
+    expect(
+        find.byKey(const ValueKey('reaction-library-emoji-097')), findsNothing);
+    final greeting = find.byKey(const ValueKey('reaction-library-emoji-096'));
+    expect(greeting, findsOneWidget);
+    expect(selected, isNull);
+    await tester.tap(greeting);
+    await tester.pumpAndSettle();
+    expect(selected, '[[bt-emoji:096]]');
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   for (final viewport in [
     (width: 320.0, height: 240.0, keyboard: 0.0, scale: 2.5),
     (width: 390.0, height: 844.0, keyboard: 350.0, scale: 2.5),
@@ -154,6 +190,14 @@ void main() {
       await tester.scrollUntilVisible(choice, 60, scrollable: scrollable);
       await tester.pumpAndSettle();
       final hit = tester.getRect(choice);
+      final artwork = tester
+          .getRect(find.descendant(of: choice, matching: find.byType(Image)));
+      expect(artwork.width, closeTo(35.2, .001));
+      expect(artwork.height, closeTo(35.2, .001));
+      expect(artwork.left, greaterThanOrEqualTo(hit.left));
+      expect(artwork.right, lessThanOrEqualTo(hit.right));
+      expect(artwork.top, greaterThanOrEqualTo(hit.top));
+      expect(artwork.bottom, lessThanOrEqualTo(hit.bottom));
       expect(hit.left, greaterThanOrEqualTo(0));
       expect(hit.right, lessThanOrEqualTo(viewport.width));
       expect(hit.top, greaterThanOrEqualTo(0));

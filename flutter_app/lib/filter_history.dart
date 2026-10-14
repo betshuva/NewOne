@@ -1,3 +1,5 @@
+import 'remote_card_notice.dart';
+import 'chat_design_settings.dart';
 import 'moderation_user_reason.dart';
 import 'copyable_file_name.dart';
 import 'blocked_video_notice.dart';
@@ -332,50 +334,69 @@ class _FilterHiddenImageState extends State<FilterHiddenImage> {
     }
   }
 
+  Widget _blockedRow(BuildContext context) => RemoteCardNotice(
+      title: 'התמונה נחסמה',
+      details: hiddenImageMessage(
+          fileType: widget.fileType,
+          hiddenReason: _hiddenReason,
+          status: widget.status,
+          reason: widget.reason,
+          contentPurged: widget.contentPurged),
+      fileName: widget.fileName,
+      icon: Icons.block,
+      compactSetting: 'compactBlockedMedia');
+
   @override
-  Widget build(BuildContext context) => widget.fileType == 'video' &&
-          const ['rejected', 'rejected_scan', 'stopped', 'stopped_scan']
+  Widget build(BuildContext context) => widget.fileType != 'video' &&
+          const ['rejected', 'rejected_scan']
               .contains(widget.status?.trim().toLowerCase())
-      ? BlockedVideoNotice(fileName: widget.fileName)
-      : Container(
-        constraints: const BoxConstraints(maxWidth: 280),
-        margin: const EdgeInsets.symmetric(vertical: 5),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-            color: const Color(0xFFF0F5F9),
-            borderRadius: BorderRadius.circular(10)),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          if (widget.fileName?.trim().isNotEmpty == true) ...[
-            CopyableFileName(widget.fileName!,
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 6),
-          ],
-          Icon(switch (_hiddenImageKind(
-            hiddenReason: _hiddenReason,
-            status: widget.status,
-            contentPurged: widget.contentPurged,
-          )) {
-            _HiddenImageKind.contentFilter => Icons.visibility_off_outlined,
-            _HiddenImageKind.pending => Icons.hourglass_top,
-            _HiddenImageKind.rejected => Icons.block,
-            _ => Icons.image_not_supported_outlined,
-          }),
-          const SizedBox(height: 6),
-          Text(
-              hiddenImageMessage(
-                fileType: widget.fileType,
-                hiddenReason: _hiddenReason,
-                status: widget.status,
-                reason: widget.reason,
-                contentPurged: widget.contentPurged,
-              ),
-              textAlign: TextAlign.center),
-          if (_canRestore)
-            TextButton(
-                onPressed: _restoring ? null : _restore,
-                child: Text(_restoring ? 'מחזיר…' : 'להחזיר את התמונה הזו')),
-        ]),
-      );
+      ? _blockedRow(context)
+      : widget.fileType == 'video' &&
+              const ['rejected', 'rejected_scan', 'stopped', 'stopped_scan']
+                  .contains(widget.status?.trim().toLowerCase())
+          ? BlockedVideoNotice(fileName: widget.fileName)
+          : Container(
+              constraints: const BoxConstraints(maxWidth: 280),
+              margin: const EdgeInsets.symmetric(vertical: 5),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                  color: const Color(0xFFF0F5F9),
+                  borderRadius: BorderRadius.circular(10)),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                if (widget.fileName?.trim().isNotEmpty == true) ...[
+                  CopyableFileName(widget.fileName!,
+                      style: const TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 6),
+                ],
+                Icon(switch (_hiddenImageKind(
+                  hiddenReason: _hiddenReason,
+                  status: widget.status,
+                  contentPurged: widget.contentPurged,
+                )) {
+                  _HiddenImageKind.contentFilter =>
+                    Icons.visibility_off_outlined,
+                  _HiddenImageKind.pending => Icons.hourglass_top,
+                  _HiddenImageKind.rejected => Icons.block,
+                  _ => Icons.image_not_supported_outlined,
+                }),
+                const SizedBox(height: 6),
+                Text(
+                    hiddenImageMessage(
+                      fileType: widget.fileType,
+                      hiddenReason: _hiddenReason,
+                      status: widget.status,
+                      reason: widget.reason,
+                      contentPurged: widget.contentPurged,
+                    ),
+                    textAlign: TextAlign.center),
+                if (_canRestore)
+                  TextButton(
+                      onPressed: _restoring ? null : _restore,
+                      child:
+                          Text(_restoring ? 'מחזיר…' : 'להחזיר את התמונה הזו')),
+              ]),
+            );
 }
 
 /// Observes a hidden placeholder without offering an action in a library tile.

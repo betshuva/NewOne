@@ -58,7 +58,6 @@ void main() {
 
       final indicator = find.byKey(const ValueKey('private-typing-indicator'));
       final input = find.byType(EditableText).first;
-      final indicatorRect = tester.getRect(indicator);
       final inputRect = tester.getRect(input);
       final histories = find.byType(Scrollable);
       List<Rect> historyRects() => [
@@ -79,9 +78,11 @@ void main() {
       }
 
       void expectStableLayout() {
-        expect(tester.getRect(indicator), indicatorRect);
         expect(tester.getRect(input), inputRect);
-        expect(historyRects(), originalHistoryRects);
+        final indicatorHeight = indicator.evaluate().isEmpty
+            ? 0.0 : tester.getRect(indicator).height;
+        expect(indicatorHeight, isTyping() ? greaterThan(0) : 0);
+        if (!isTyping()) expect(historyRects(), originalHistoryRects);
       }
 
       expect(isTyping(), isFalse);

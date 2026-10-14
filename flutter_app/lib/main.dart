@@ -1,3 +1,5 @@
+import 'settings_presentation.dart';
+import 'remote_card_notice.dart';
 import 'education_form_tools.dart';
 import 'education_form_message_card.dart';
 import 'simple_survey_editor.dart';
@@ -12,6 +14,8 @@ import 'dart:typed_data' show BytesBuilder;
 import 'web_chat_attachments.dart';
 import 'chat_upload_batch.dart';
 import 'chat_message_text.dart';
+import 'upload_scan_details.dart';
+import 'chat_design_settings.dart';
 import 'listing_background_images.dart';
 import 'listing_search_filters.dart';
 import 'chat_listing_image.dart';
@@ -52,6 +56,7 @@ import 'inline_custom_emoji.dart';
 import 'keyboard_click_sound.dart';
 import 'keyboard_inserted_image.dart';
 import 'shared_composer_send.dart';
+import 'transient_chat_notice.dart';
 import 'guide_file.dart';
 import 'guide_table_text.dart';
 import 'safe_information_text.dart';
@@ -2079,7 +2084,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.71';
+const kVersion = '1.3.77';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -2124,18 +2129,11 @@ class _SystemContentWarningArtwork extends StatelessWidget {
       );
 }
 
-SnackBar _contentWarningSnackBar(String message) => SnackBar(
-      backgroundColor: const Color(0xFF8B1E1E),
-      duration: const Duration(seconds: 5),
-      content: Row(children: [
-        const _SystemContentWarningArtwork(compact: true),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text(message,
-              textDirection: TextDirection.rtl, textAlign: TextAlign.right),
-        ),
-      ]),
-    );
+void _showContentWarning(BuildContext context, String message) =>
+    showTransientChatNotice(context, message,
+        backgroundColor: const Color(0xFF8B1E1E),
+        duration: const Duration(seconds: 5),
+        leading: const _SystemContentWarningArtwork(compact: true));
 
 void _insertExpressionText(
   TextEditingController controller,
@@ -2377,6 +2375,8 @@ Future<_FileUploadResult> _uploadFileRequest({
     if (fields['clientUploadId'] != null) {
       data = {...data, 'clientUploadId': fields['clientUploadId']};
     }
+
+    data = {...data, 'fileSize': data['fileSize'] ?? length};
 
     if (_isScanStopped(data)) {
       return _FileUploadResult(_FileUploadOutcome.failed,
@@ -3871,7 +3871,6 @@ Future<void> main() async {
   runApp(const BetshuvApp());
 }
 
-
 Widget _magenDavid(
         {double size = 32, Color color = kPrimary, Color bg = Colors.white}) =>
     ClipRRect(
@@ -4103,8 +4102,8 @@ class _SplashScreenState extends State<SplashScreen>
         context,
         MaterialPageRoute(
           builder: (welcomeContext) => WelcomeScreen(
-            onContinue: (registration) => Navigator.of(welcomeContext)
-                .pushReplacement(MaterialPageRoute(
+            onContinue: (registration) =>
+                Navigator.of(welcomeContext).pushReplacement(MaterialPageRoute(
               builder: (_) => AuthScreen(initialRegistration: registration),
             )),
             onOpenUrl: (url) =>
@@ -4221,7 +4220,6 @@ class _GeneralFilterEnforcementCard extends StatelessWidget {
         ),
       );
 }
-
 
 class _TermsAgreementTile extends StatelessWidget {
   final bool value;
@@ -4986,7 +4984,6 @@ class _AuthScreenState extends State<AuthScreen> {
       });
     }
   }
-
 
   Future<void> _selectRegistrationMethod(String method,
       {GoogleSignInAccount? webAccount}) async {
@@ -6015,8 +6012,7 @@ class _AuthScreenState extends State<AuthScreen> {
                           const SizedBox(
                               width: 22,
                               height: 22,
-                              child:
-                                  CircularProgressIndicator(strokeWidth: 2)),
+                              child: CircularProgressIndicator(strokeWidth: 2)),
                         ],
                         if (_error != null) ...[
                           const SizedBox(height: 14),
@@ -7400,7 +7396,6 @@ class _BirthDateFieldState extends State<_BirthDateField> {
         ),
       );
 }
-
 
 // ── Verify Screen (SMS + Email after registration) ────────────────
 class VerifyScreen extends StatefulWidget {
@@ -10560,9 +10555,18 @@ List<String> get _listingCategories {
   final remote = _listingCatalogOverlay['category_order'];
   if (remote is List) {
     final values = remote.whereType<String>().toList();
-    if (values.isNotEmpty) return values;
+    if (values.isNotEmpty)
+      return [
+        if (values.contains('הכל')) 'הכל',
+        ...ChatDesignStore.shared.value
+            .orderedCategories(values.where((c) => c != 'הכל'))
+      ];
   }
-  return _kCategories;
+  return [
+    if (_kCategories.contains('הכל')) 'הכל',
+    ...ChatDesignStore.shared.value
+        .orderedCategories(_kCategories.where((c) => c != 'הכל'))
+  ];
 }
 
 List<(String, String, String)> _detailFieldsForCategory(String category) {
@@ -14837,7 +14841,10 @@ class ListingsScreen extends StatefulWidget {
   State<ListingsScreen> createState() => _ListingsScreenState();
 }
 
-class _ListingsScreenState extends State<ListingsScreen> {
+class _ListingsScreenState extends State<ListingsScreen>
+    with RemoteChatDesignState<ListingsScreen> {
+  @override
+  String get chatDesignApi => kApi;
   List<Map<String, dynamic>> _items = [];
   bool _loading = true;
   String? _loadError;
@@ -14872,6 +14879,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
   @override
   void initState() {
     super.initState();
+    widget.socket?.on('chat:design-updated', onRemoteChatDesignChanged);
     listingBackgroundImages.addListener(_onBackgroundImages);
     _load();
     _refreshListingCatalog().then((changed) {
@@ -14886,6 +14894,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
 
   @override
   void dispose() {
+    widget.socket?.off('chat:design-updated', onRemoteChatDesignChanged);
     listingBackgroundImages.removeListener(_onBackgroundImages);
     _searchDebounce?.cancel();
     _listingCatalogTimer?.cancel();
@@ -14893,10 +14902,21 @@ class _ListingsScreenState extends State<ListingsScreen> {
     super.dispose();
   }
 
+  void _applyQuickSearch() {
+    _searchDebounce?.cancel();
+    _queryFilter = _searchCtrl.text.trim();
+    _load();
+  }
+
   void _onSearchChanged(String value) {
     setState(() {});
     _searchDebounce?.cancel();
-    _searchDebounce = Timer(const Duration(milliseconds: 350), () {
+    if (!ChatDesignStore.shared.value.flag('listingSearchAsYouType')) return;
+    _searchDebounce = Timer(
+        Duration(
+            milliseconds: ChatDesignStore.shared.value
+                .number('listingSearchDebounceMs', 350)
+                .round()), () {
       if (!mounted) return;
       _queryFilter = value.trim();
       _load();
@@ -15127,12 +15147,17 @@ class _ListingsScreenState extends State<ListingsScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      applyChatDesign(context, _buildDesignScreen);
+
+  Widget _buildDesignScreen(BuildContext context) {
     final listPane = Scaffold(
-      backgroundColor: const Color(0xFFF5F7FA),
+      backgroundColor: ChatDesignStore.shared.value
+          .color('listingBackground', const Color(0xFFF5F7FA)),
       bottomNavigationBar: ListingBackgroundImageStatus(token: widget.token),
       appBar: AppBar(
-        backgroundColor: kPrimary,
+        backgroundColor:
+            ChatDesignStore.shared.value.color('accentColor', kPrimary),
         elevation: 0,
         toolbarHeight: 72,
         titleSpacing: 16,
@@ -15160,21 +15185,22 @@ class _ListingsScreenState extends State<ListingsScreen> {
               }
             },
           ),
-          TextButton.icon(
-            onPressed: _openPost,
-            icon: const Icon(
-              Icons.add_business_outlined,
-              color: Colors.white,
-              size: 20,
-            ),
-            label: const Text(
-              'פרסום מתקדם',
-              style: TextStyle(
+          if (ChatDesignStore.shared.value.flag('listingShowPost'))
+            TextButton.icon(
+              onPressed: _openPost,
+              icon: const Icon(
+                Icons.add_business_outlined,
                 color: Colors.white,
-                fontWeight: FontWeight.bold,
+                size: 20,
+              ),
+              label: const Text(
+                'פרסום מתקדם',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
-          ),
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(48),
@@ -15198,10 +15224,22 @@ class _ListingsScreenState extends State<ListingsScreen> {
                 TextField(
                   controller: _searchCtrl,
                   onChanged: _onSearchChanged,
+                  onSubmitted:
+                      ChatDesignStore.shared.value.flag('listingSearchOnEnter')
+                          ? (value) {
+                              _searchDebounce?.cancel();
+                              _queryFilter = value.trim();
+                              _load();
+                            }
+                          : null,
                   textDirection: TextDirection.rtl,
                   decoration: InputDecoration(
                     hintText: 'חיפוש במודעות... ',
-                    prefixIcon: const Icon(Icons.search, size: 21),
+                    prefixIcon: IconButton(
+                        key: const ValueKey('listing-quick-search-submit'),
+                        tooltip: 'חפש מודעות',
+                        onPressed: _applyQuickSearch,
+                        icon: const Icon(Icons.search, size: 21)),
                     suffixIcon: _searchCtrl.text.isEmpty
                         ? null
                         : IconButton(
@@ -15228,9 +15266,11 @@ class _ListingsScreenState extends State<ListingsScreen> {
                   children: [
                     _quickFilterChip('all', 'הכול'),
                     const SizedBox(width: 5),
-                    _quickFilterChip('free', 'למסירה'),
+                    if (ChatDesignStore.shared.value.flag('listingShowFree'))
+                      _quickFilterChip('free', 'למסירה'),
                     const SizedBox(width: 5),
-                    _quickFilterChip('sale', 'למכירה'),
+                    if (ChatDesignStore.shared.value.flag('listingShowSale'))
+                      _quickFilterChip('sale', 'למכירה'),
                     Expanded(
                       child: Align(
                         alignment: AlignmentDirectional.centerEnd,
@@ -15345,12 +15385,17 @@ class _ListingsScreenState extends State<ListingsScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openPost,
-        backgroundColor: kPrimary,
-        icon: const Icon(Icons.add, color: Colors.white),
-        label: const Text('פרסום מתקדם', style: TextStyle(color: Colors.white)),
-      ),
+      floatingActionButton: !ChatDesignStore.shared.value
+              .flag('listingShowPost')
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: _openPost,
+              backgroundColor:
+                  ChatDesignStore.shared.value.color('accentColor', kPrimary),
+              icon: const Icon(Icons.add, color: Colors.white),
+              label: const Text('פרסום מתקדם',
+                  style: TextStyle(color: Colors.white)),
+            ),
     );
     if (MediaQuery.sizeOf(context).width < 900) {
       return _showSearchForm ? _advancedSearchPane() : listPane;
@@ -15383,10 +15428,20 @@ class _ListingsScreenState extends State<ListingsScreen> {
           return true;
         },
         child: Row(
-          textDirection:
-              _showSearchForm ? TextDirection.ltr : Directionality.of(context),
+          textDirection: _showSearchForm
+              ? (ChatDesignStore.shared.value
+                          .choice('listingSearchSide', 'right') ==
+                      'right'
+                  ? TextDirection.ltr
+                  : TextDirection.rtl)
+              : Directionality.of(context),
           children: [
-            SizedBox(width: 410, child: listPane),
+            SizedBox(
+                width: math.min(
+                    ChatDesignStore.shared.value
+                        .number('listingResultsWidth', 410),
+                    MediaQuery.sizeOf(context).width * .55),
+                child: listPane),
             const VerticalDivider(
               width: 1,
               thickness: 1,
@@ -15494,14 +15549,16 @@ Widget? _listingSearchClearIcon(
   bool hasValue,
   VoidCallback onClear,
 ) =>
-    hasValue
-        ? IconButton(
-            key: ValueKey('listing-search-clear-$name'),
-            tooltip: 'נקה $label',
-            icon: const Icon(Icons.close, size: 18),
-            onPressed: onClear,
-          )
-        : null;
+    !ChatDesignStore.shared.value.flag('listingShowClearButtons')
+        ? null
+        : hasValue
+            ? IconButton(
+                key: ValueKey('listing-search-clear-$name'),
+                tooltip: 'נקה $label',
+                icon: const Icon(Icons.close, size: 18),
+                onPressed: onClear,
+              )
+            : null;
 
 Widget _advancedListingDetailField(
   String category,
@@ -15632,7 +15689,10 @@ class AdvancedListingSearchScreen extends StatefulWidget {
 }
 
 class _AdvancedListingSearchScreenState
-    extends State<AdvancedListingSearchScreen> {
+    extends State<AdvancedListingSearchScreen>
+    with RemoteChatDesignState<AdvancedListingSearchScreen> {
+  @override
+  String get chatDesignApi => kApi;
   late final TextEditingController _queryCtrl;
   late final TextEditingController _cityCtrl;
   late final TextEditingController _minPriceCtrl;
@@ -15837,15 +15897,36 @@ class _AdvancedListingSearchScreenState
     );
   }
 
-  Widget _fieldRows(List<Widget> fields) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (var i = 0; i < fields.length; i++) ...[
-            if (i > 0) const SizedBox(height: 12),
-            fields[i],
-          ],
-        ],
-      );
+  Widget _fieldRows(List<Widget> fields) =>
+      !ChatDesignStore.shared.value.flag('listingSingleFieldRows') &&
+              MediaQuery.sizeOf(context).width >= 600
+          ? LayoutBuilder(
+              builder: (context, constraints) => Wrap(
+                      spacing: ChatDesignStore.shared.value
+                          .number('listingFieldGap', 12),
+                      runSpacing: ChatDesignStore.shared.value
+                          .number('listingFieldGap', 12),
+                      children: [
+                        for (final field in fields)
+                          SizedBox(
+                              width: (constraints.maxWidth -
+                                      ChatDesignStore.shared.value
+                                          .number('listingFieldGap', 12)) /
+                                  2,
+                              child: field)
+                      ]))
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var i = 0; i < fields.length; i++) ...[
+                  if (i > 0)
+                    SizedBox(
+                        height: ChatDesignStore.shared.value
+                            .number('listingFieldGap', 12)),
+                  fields[i],
+                ],
+              ],
+            );
 
   Widget _section(
     String title,
@@ -15887,8 +15968,239 @@ class _AdvancedListingSearchScreenState
       );
 
   @override
-  Widget build(BuildContext context) {
-    final fields = _listingSearchFields(_category);
+  Widget build(BuildContext context) =>
+      applyChatDesign(context, _buildDesignScreen);
+
+  Widget _buildDesignScreen(BuildContext context) {
+    final fields = ChatDesignStore.shared.value
+        .orderedFields(_listingSearchFields(_category), (field) => field.$1);
+
+    final sections = <String, List<Widget>>{
+      'category': <Widget>[
+        _select(
+          'category',
+          _category,
+          'קטגוריה',
+          [
+            for (final category in [
+              'הכל',
+              ...ChatDesignStore.shared.value.orderedCategories(
+                  _listingCategories.where((c) => c != 'הכל'))
+            ])
+              (category, category),
+          ],
+          _changeCategory,
+          icon: Icons.category_outlined,
+        ),
+      ],
+      'query': <Widget>[
+        SizedBox(
+            height: ChatDesignStore.shared.value.number('listingFieldGap', 12)),
+        TextField(
+          key: const ValueKey('listing-search-query'),
+          controller: _queryCtrl,
+          textDirection: TextDirection.rtl,
+          onSubmitted: ChatDesignStore.shared.value.flag('listingSearchOnEnter')
+              ? (_) => _apply()
+              : null,
+          decoration: InputDecoration(
+            labelText: 'מה מחפשים?',
+            hintText: 'שם, תיאור או מילת חיפוש',
+            prefixIcon: const Icon(Icons.search, color: kPrimary),
+            border: const OutlineInputBorder(),
+            suffixIcon: _textClearIcon('query', 'חיפוש', _queryCtrl),
+          ),
+        ),
+      ],
+      'details': <Widget>[
+        if (fields.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          _section(
+            'מאפייני $_category',
+            _category == 'רכב'
+                ? Icons.directions_car_outlined
+                : _category == 'נדל״ן'
+                    ? Icons.home_outlined
+                    : Icons.tune,
+            [
+              _fieldRows([
+                for (final field in fields)
+                  KeyedSubtree(
+                    key: ValueKey('listing-search-detail-${field.$1}'),
+                    child: _advancedListingDetailField(
+                      _category,
+                      field,
+                      _detailCtrls,
+                      () => setState(() {}),
+                    ),
+                  ),
+              ]),
+            ],
+          ),
+        ],
+      ],
+      'price': <Widget>[
+        const SizedBox(height: 16),
+        _section(
+            'מחיר וסוג מודעה',
+            Icons.sell_outlined,
+            [
+              _select(
+                  'type',
+                  _type,
+                  'סוג מודעה',
+                  const [
+                    ('all', 'הכול'),
+                    ('free', 'למסירה ללא תשלום'),
+                    ('sale', 'למכירה'),
+                  ],
+                  (value) => setState(() => _type = value ?? 'all')),
+              SizedBox(
+                  height: ChatDesignStore.shared.value
+                      .number('listingFieldGap', 12)),
+              _fieldRows([
+                TextField(
+                  key: const ValueKey('listing-search-min-price'),
+                  controller: _minPriceCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: 'מחיר מינימום',
+                    prefixText: '₪ ',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: _textClearIcon(
+                      'min-price',
+                      'מחיר מינימום',
+                      _minPriceCtrl,
+                    ),
+                  ),
+                ),
+                TextField(
+                  key: const ValueKey('listing-search-max-price'),
+                  controller: _maxPriceCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: 'מחיר מקסימום',
+                    prefixText: '₪ ',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: _textClearIcon(
+                      'max-price',
+                      'מחיר מקסימום',
+                      _maxPriceCtrl,
+                    ),
+                  ),
+                ),
+              ]),
+              if (_priceError != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _priceError!,
+                  style: const TextStyle(color: Colors.red),
+                ),
+              ],
+            ],
+            key: _priceSectionKey),
+      ],
+      'location': <Widget>[
+        const SizedBox(height: 16),
+        _section('מיקום', Icons.location_on_outlined, [
+          KeyedSubtree(
+            key: const ValueKey('listing-search-city'),
+            child: _LocationAutocompleteField(
+              controller: _cityCtrl,
+              label: 'עיר או אזור',
+              hint: 'התחל להקליד ובחר מהרשימה',
+              suffixIcon: _textClearIcon(
+                'city',
+                'עיר או אזור',
+                _cityCtrl,
+              ),
+            ),
+          ),
+          SizedBox(
+              height:
+                  ChatDesignStore.shared.value.number('listingFieldGap', 12)),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'רדיוס: ${_radius == 0 ? "ללא הגבלה" : "${_radius.toInt()} ק״מ"}',
+                ),
+              ),
+              if (_radius > 0 &&
+                  ChatDesignStore.shared.value.flag('listingShowClearButtons'))
+                _listingSearchClearIcon(
+                  'radius',
+                  'רדיוס',
+                  true,
+                  () => setState(() => _radius = 0),
+                )!,
+            ],
+          ),
+          Slider(
+            value: _radius,
+            min: 0,
+            max: 100,
+            divisions: 10,
+            label: _radius == 0 ? 'ללא הגבלה' : '${_radius.toInt()} ק״מ',
+            activeColor: kPrimary,
+            onChanged: (value) => setState(() => _radius = value),
+          ),
+          const Text(
+            'הרדיוס מחושב מהמיקום השמור בפרופיל',
+            style: TextStyle(fontSize: 12, color: kSubtext),
+          ),
+        ]),
+      ],
+      'options': <Widget>[
+        const SizedBox(height: 16),
+        _fieldRows([
+          if (_category != 'רכב' && _category != 'נדל״ן')
+            _select(
+              'condition',
+              _condition,
+              'מצב המוצר',
+              const [
+                ('all', 'כל המצבים'),
+                ('new', 'חדש'),
+                ('like_new', 'כמו חדש'),
+                ('good', 'מצב טוב'),
+                ('fair', 'מצב סביר'),
+                ('for_parts', 'לתיקון / לחלקים'),
+              ],
+              (value) => setState(() => _condition = value ?? 'all'),
+              icon: Icons.verified_outlined,
+            ),
+          _select(
+            'sort',
+            _sort,
+            'מיון תוצאות',
+            const [
+              ('newest', 'החדשות ביותר'),
+              ('price_asc', 'מחיר: מהנמוך לגבוה'),
+              ('price_desc', 'מחיר: מהגבוה לנמוך'),
+            ],
+            (value) => setState(() => _sort = value ?? 'newest'),
+            icon: Icons.sort,
+          ),
+        ]),
+      ],
+    };
+    final sectionKeys = ChatDesignStore.shared.value
+        .orderedItems(
+            'listingSearchSectionOrder', sections.keys.toList(), (key) => key)
+        .where((key) => sections[key]!.isNotEmpty)
+        .toList();
+    List<Widget> sectionBody(String key) {
+      final body = sections[key]!;
+      return body.first is SizedBox && (body.first as SizedBox).child == null
+          ? body.sublist(1)
+          : body;
+    }
+
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
@@ -15902,201 +16214,26 @@ class _AdvancedListingSearchScreenState
       body: Align(
         alignment: widget.embedded ? Alignment.topCenter : Alignment.topLeft,
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 760),
+          constraints: BoxConstraints(
+              maxWidth: ChatDesignStore.shared.value
+                  .number('listingSearchWidth', 760)),
           child: SingleChildScrollView(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _select(
-                  'category',
-                  _category,
-                  'קטגוריה',
-                  [
-                    for (final category in {'הכל', ..._listingCategories})
-                      (category, category),
-                  ],
-                  _changeCategory,
-                  icon: Icons.category_outlined,
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  key: const ValueKey('listing-search-query'),
-                  controller: _queryCtrl,
-                  textDirection: TextDirection.rtl,
-                  onSubmitted: (_) => _apply(),
-                  decoration: InputDecoration(
-                    labelText: 'מה מחפשים?',
-                    hintText: 'שם, תיאור או מילת חיפוש',
-                    prefixIcon: const Icon(Icons.search, color: kPrimary),
-                    border: const OutlineInputBorder(),
-                    suffixIcon: _textClearIcon('query', 'חיפוש', _queryCtrl),
-                  ),
-                ),
-                if (fields.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  _section(
-                    'מאפייני $_category',
-                    _category == 'רכב'
-                        ? Icons.directions_car_outlined
-                        : _category == 'נדל״ן'
-                            ? Icons.home_outlined
-                            : Icons.tune,
-                    [
-                      _fieldRows([
-                        for (final field in fields)
-                          KeyedSubtree(
-                            key: ValueKey('listing-search-detail-${field.$1}'),
-                            child: _advancedListingDetailField(
-                              _category,
-                              field,
-                              _detailCtrls,
-                              () => setState(() {}),
-                            ),
-                          ),
-                      ]),
-                    ],
-                  ),
-                ],
-                const SizedBox(height: 16),
-                _section(
-                    'מחיר וסוג מודעה',
-                    Icons.sell_outlined,
-                    [
-                      _select(
-                          'type',
-                          _type,
-                          'סוג מודעה',
-                          const [
-                            ('all', 'הכול'),
-                            ('free', 'למסירה ללא תשלום'),
-                            ('sale', 'למכירה'),
-                          ],
-                          (value) => setState(() => _type = value ?? 'all')),
-                      const SizedBox(height: 12),
-                      _fieldRows([
-                        TextField(
-                          key: const ValueKey('listing-search-min-price'),
-                          controller: _minPriceCtrl,
-                          keyboardType: const TextInputType.numberWithOptions(
-                            decimal: true,
-                          ),
-                          decoration: InputDecoration(
-                            labelText: 'מחיר מינימום',
-                            prefixText: '₪ ',
-                            border: const OutlineInputBorder(),
-                            suffixIcon: _textClearIcon(
-                              'min-price',
-                              'מחיר מינימום',
-                              _minPriceCtrl,
-                            ),
-                          ),
-                        ),
-                        TextField(
-                          key: const ValueKey('listing-search-max-price'),
-                          controller: _maxPriceCtrl,
-                          keyboardType: const TextInputType.numberWithOptions(
-                            decimal: true,
-                          ),
-                          decoration: InputDecoration(
-                            labelText: 'מחיר מקסימום',
-                            prefixText: '₪ ',
-                            border: const OutlineInputBorder(),
-                            suffixIcon: _textClearIcon(
-                              'max-price',
-                              'מחיר מקסימום',
-                              _maxPriceCtrl,
-                            ),
-                          ),
-                        ),
-                      ]),
-                      if (_priceError != null) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          _priceError!,
-                          style: const TextStyle(color: Colors.red),
-                        ),
-                      ],
-                    ],
-                    key: _priceSectionKey),
-                const SizedBox(height: 16),
-                _section('מיקום', Icons.location_on_outlined, [
+                for (var i = 0; i < sectionKeys.length; i++)
                   KeyedSubtree(
-                    key: const ValueKey('listing-search-city'),
-                    child: _LocationAutocompleteField(
-                      controller: _cityCtrl,
-                      label: 'עיר או אזור',
-                      hint: 'התחל להקליד ובחר מהרשימה',
-                      suffixIcon: _textClearIcon(
-                        'city',
-                        'עיר או אזור',
-                        _cityCtrl,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          'רדיוס: ${_radius == 0 ? "ללא הגבלה" : "${_radius.toInt()} ק״מ"}',
-                        ),
-                      ),
-                      if (_radius > 0)
-                        _listingSearchClearIcon(
-                          'radius',
-                          'רדיוס',
-                          true,
-                          () => setState(() => _radius = 0),
-                        )!,
-                    ],
-                  ),
-                  Slider(
-                    value: _radius,
-                    min: 0,
-                    max: 100,
-                    divisions: 10,
-                    label:
-                        _radius == 0 ? 'ללא הגבלה' : '${_radius.toInt()} ק״מ',
-                    activeColor: kPrimary,
-                    onChanged: (value) => setState(() => _radius = value),
-                  ),
-                  const Text(
-                    'הרדיוס מחושב מהמיקום השמור בפרופיל',
-                    style: TextStyle(fontSize: 12, color: kSubtext),
-                  ),
-                ]),
-                const SizedBox(height: 16),
-                _fieldRows([
-                  if (_category != 'רכב' && _category != 'נדל״ן')
-                    _select(
-                      'condition',
-                      _condition,
-                      'מצב המוצר',
-                      const [
-                        ('all', 'כל המצבים'),
-                        ('new', 'חדש'),
-                        ('like_new', 'כמו חדש'),
-                        ('good', 'מצב טוב'),
-                        ('fair', 'מצב סביר'),
-                        ('for_parts', 'לתיקון / לחלקים'),
-                      ],
-                      (value) => setState(() => _condition = value ?? 'all'),
-                      icon: Icons.verified_outlined,
-                    ),
-                  _select(
-                    'sort',
-                    _sort,
-                    'מיון תוצאות',
-                    const [
-                      ('newest', 'החדשות ביותר'),
-                      ('price_asc', 'מחיר: מהנמוך לגבוה'),
-                      ('price_desc', 'מחיר: מהגבוה לנמוך'),
-                    ],
-                    (value) => setState(() => _sort = value ?? 'newest'),
-                    icon: Icons.sort,
-                  ),
-                ]),
+                      key: ValueKey('listing-search-section-${sectionKeys[i]}'),
+                      child: Padding(
+                          padding: EdgeInsets.only(
+                              top: i == 0
+                                  ? 0
+                                  : ChatDesignStore.shared.value
+                                      .number('listingFieldGap', 12)),
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: sectionBody(sectionKeys[i])))),
                 const SizedBox(height: 8),
               ],
             ),
@@ -16244,135 +16381,145 @@ class _ListingCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final design = ChatDesignStore.shared.value;
+    final cards = design.choice('listingLayout', 'list') == 'cards';
+    final imageSize = design.number('listingImageSize', 110);
+    final radius = design.number('listingCornerRadius', 14);
     final isFree = item['type'] == 'free';
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
-        decoration: BoxDecoration(
-            color: selected ? const Color(0xFFE8F4FD) : Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            border: selected ? Border.all(color: kPrimary, width: 1.5) : null,
-            boxShadow: [
-              BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.06),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2))
-            ]),
-        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Image
-          ClipRRect(
-            borderRadius:
-                const BorderRadius.horizontal(right: Radius.circular(14)),
-            child: item['image_url'] != null
-                ? _PersistentMediaImage(
-                    url: item['image_url'].toString(),
-                    width: 110,
-                    height: 110,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_) => _placeholder())
-                : item['video_url'] != null
-                    ? SizedBox(
-                        width: 110,
-                        height: 110,
-                        child: VideoThumbnail(
-                          url: _absoluteMediaUrl(item['video_url'].toString()),
-                          small: true,
-                          fallback: Container(
-                              color: const Color(0xFFE8F4FD),
-                              child: const Icon(Icons.play_circle_outline,
-                                  color: kPrimary)),
-                        ))
-                    : _placeholder(),
-          ),
-          // Info
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      Container(
+    final date = _listingPublishedAt(item['created_at'], compact: true);
+    final info = Padding(
+      padding: EdgeInsets.all(design.number('listingCardPadding', 12)),
+      child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  if (design.flag('listingShowPrice'))
+                    Container(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 8, vertical: 2),
                         decoration: BoxDecoration(
-                          color: isFree
-                              ? const Color(0xFFD1FAE5)
-                              : const Color(0xFFEDE9FE),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+                            color: isFree
+                                ? const Color(0xFFD1FAE5)
+                                : const Color(0xFFEDE9FE),
+                            borderRadius: BorderRadius.circular(12)),
                         child: Text(
                             isFree
                                 ? 'חינם'
-                                : '₪${item['price']?.toStringAsFixed(0) ?? ''}',
+                                : '₪${item['price'] is num ? (item['price'] as num).toStringAsFixed(0) : item['price'] ?? ''}',
                             style: TextStyle(
                                 fontSize: 12,
                                 fontWeight: FontWeight.bold,
                                 color: isFree
                                     ? const Color(0xFF065F46)
-                                    : const Color(0xFF5B21B6))),
-                      ),
-                      const SizedBox(width: 6),
-                      if (item['category'] != null)
-                        Text(item['category'],
-                            style: TextStyle(fontSize: 12, color: kSubtext)),
-                      const Spacer(),
-                      if (_listingPublishedAt(item['created_at'], compact: true)
-                          .isNotEmpty)
-                        Row(mainAxisSize: MainAxisSize.min, children: [
-                          Icon(Icons.calendar_today_outlined,
-                              size: 12, color: kSubtext),
-                          const SizedBox(width: 3),
-                          Text(
-                            _listingPublishedAt(item['created_at'],
-                                compact: true),
-                            style: TextStyle(fontSize: 11, color: kSubtext),
-                          ),
-                        ]),
-                    ]),
-                    const SizedBox(height: 6),
-                    Row(children: [
-                      Expanded(
-                          child: Text(item['title'] ?? '',
-                              style: const TextStyle(
-                                  fontSize: 15, fontWeight: FontWeight.w600),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis)),
-                      IconButton(
-                        tooltip: _listingAiTooltip,
-                        onPressed: onAskAi,
-                        icon: const Icon(Icons.auto_awesome,
-                            color: kPrimary, size: 21),
-                      ),
-                    ]),
-                    const SizedBox(height: 4),
-                    if (item['city'] != null)
-                      Row(children: [
-                        Icon(Icons.location_on_outlined,
-                            size: 14, color: kSubtext),
-                        const SizedBox(width: 2),
-                        Text(item['city'],
-                            style: TextStyle(fontSize: 12, color: kSubtext)),
-                        if (item['distance_km'] != null) ...[
-                          Text(' · ', style: TextStyle(color: kSubtext)),
-                          Text('${item['distance_km']} ק״מ',
-                              style: TextStyle(fontSize: 12, color: kSubtext)),
-                        ],
-                      ]),
-                  ]),
-            ),
-          ),
-        ]),
-      ),
+                                    : const Color(0xFF5B21B6)))),
+                  if (item['category'] != null)
+                    Text(item['category'].toString(),
+                        style: const TextStyle(fontSize: 12, color: kSubtext)),
+                  if (design.flag('listingShowDate') && date.isNotEmpty)
+                    Text(date,
+                        style: const TextStyle(fontSize: 11, color: kSubtext)),
+                ]),
+            const SizedBox(height: 6),
+            Row(children: [
+              Expanded(
+                  child: Text(item['title']?.toString() ?? '',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: design.number('listingTitleSize', 15),
+                          fontWeight: FontWeight.w600))),
+              if (design.flag('listingShowAi'))
+                IconButton(
+                    tooltip: _listingAiTooltip,
+                    onPressed: onAskAi,
+                    icon: Icon(Icons.auto_awesome,
+                        color: design.color('accentColor', kPrimary), size: 21))
+            ]),
+            if (design.flag('listingShowLocation') && item['city'] != null)
+              Row(children: [
+                const Icon(Icons.location_on_outlined,
+                    size: 14, color: kSubtext),
+                const SizedBox(width: 2),
+                Flexible(
+                    child: Text(
+                        '${item['city']}${item['distance_km'] == null ? '' : ' · ${item['distance_km']} ק״מ'}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12, color: kSubtext)))
+              ]),
+            if (design.flag('listingShowPublisher') &&
+                item['seller_name']?.toString().trim().isNotEmpty == true)
+              Text(item['seller_name'].toString(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: kSubtext)),
+          ]),
     );
+    Widget picture(double width) => ClipRRect(
+        borderRadius: BorderRadius.circular(radius),
+        child: item['image_url'] != null
+            ? _PersistentMediaImage(
+                url: item['image_url'].toString(),
+                width: width,
+                height: imageSize,
+                fit: BoxFit.cover,
+                errorBuilder: (_) => _placeholder(width, imageSize))
+            : item['video_url'] != null
+                ? SizedBox(
+                    width: width,
+                    height: imageSize,
+                    child: VideoThumbnail(
+                        url: _absoluteMediaUrl(item['video_url'].toString()),
+                        small: true,
+                        fallback: _placeholder(width, imageSize)))
+                : _placeholder(width, imageSize));
+    return GestureDetector(
+        onTap: onTap,
+        child: Container(
+          key: ValueKey('listing-card-${item['id']}'),
+          margin: EdgeInsets.only(bottom: design.number('listingCardGap', 12)),
+          decoration: BoxDecoration(
+              color: selected
+                  ? const Color(0xFFE8F4FD)
+                  : design.color('listingCardBackground', Colors.white),
+              borderRadius: BorderRadius.circular(radius),
+              border: selected
+                  ? Border.all(
+                      color: design.color('accentColor', kPrimary), width: 1.5)
+                  : null,
+              boxShadow: [
+                BoxShadow(
+                    color: Colors.black.withValues(alpha: .06),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2))
+              ]),
+          child: cards
+              ? LayoutBuilder(
+                  builder: (_, constraints) => Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (design.flag('listingShowImages'))
+                              picture(constraints.maxWidth),
+                            info
+                          ]))
+              : Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  if (design.flag('listingShowImages')) picture(imageSize),
+                  Expanded(child: info)
+                ]),
+        ));
   }
 
-  Widget _placeholder() => Container(
-      width: 110,
-      height: 110,
+  Widget _placeholder(double width, double height) => Container(
+      width: width,
+      height: height,
       color: const Color(0xFFE8F4FD),
-      child: Icon(Icons.image_outlined, size: 36, color: kSubtext));
+      child: const Icon(Icons.image_outlined, size: 36, color: kSubtext));
 }
 
 // ── My Listings Screen ────────────────────────────────────────────
@@ -16877,7 +17024,10 @@ class PostListingScreen extends StatefulWidget {
   State<PostListingScreen> createState() => _PostListingScreenState();
 }
 
-class _PostListingScreenState extends State<PostListingScreen> {
+class _PostListingScreenState extends State<PostListingScreen>
+    with RemoteChatDesignState<PostListingScreen> {
+  @override
+  String get chatDesignApi => kApi;
   late final ListingFormDraftStore? _draftStore =
       switch (listingDraftAccountId(widget.me, widget.token)) {
     final String id when id.isNotEmpty => ListingFormDraftStore(id),
@@ -18044,7 +18194,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      applyChatDesign(context, _buildDesignScreen);
+
+  Widget _buildDesignScreen(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: kPrimary,
@@ -18990,7 +19143,10 @@ class EditListingScreen extends StatefulWidget {
   State<EditListingScreen> createState() => _EditListingScreenState();
 }
 
-class _EditListingScreenState extends State<EditListingScreen> {
+class _EditListingScreenState extends State<EditListingScreen>
+    with RemoteChatDesignState<EditListingScreen> {
+  @override
+  String get chatDesignApi => kApi;
   final _titleCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
   final _priceCtrl = TextEditingController();
@@ -19950,7 +20106,10 @@ class _EditListingScreenState extends State<EditListingScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      applyChatDesign(context, _buildDesignScreen);
+
+  Widget _buildDesignScreen(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: kPrimary,
@@ -20353,7 +20512,10 @@ class ListingDetailScreen extends StatefulWidget {
   State<ListingDetailScreen> createState() => _ListingDetailScreenState();
 }
 
-class _ListingDetailScreenState extends State<ListingDetailScreen> {
+class _ListingDetailScreenState extends State<ListingDetailScreen>
+    with RemoteChatDesignState<ListingDetailScreen> {
+  @override
+  String get chatDesignApi => kApi;
   late String _status;
   List<String>? _backgroundImageUrls;
   String? _backgroundVideoUrl;
@@ -20636,7 +20798,10 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      applyChatDesign(context, _buildDesignScreen);
+
+  Widget _buildDesignScreen(BuildContext context) {
     final isFree = widget.item['type'] == 'free';
     final isOwner = widget.me?['id'] == widget.item['seller_id'];
     final contact = widget.item['contact_preferences'] is Map
@@ -20701,7 +20866,8 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       body: SingleChildScrollView(
         child:
             Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          if (images.isNotEmpty)
+          if (ChatDesignStore.shared.value.flag('listingShowImages') &&
+              images.isNotEmpty)
             images.length == 1
                 ? SizedBox(
                     height: galleryHeight,
@@ -20776,12 +20942,15 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                       );
                     },
                   )
-          else if (videoUrl == null)
+          else if (ChatDesignStore.shared.value.flag('listingShowImages') &&
+              videoUrl == null)
             Container(
                 height: galleryHeight,
                 color: const Color(0xFFE8F4FD),
                 child: Icon(Icons.image_outlined, size: 80, color: kSubtext)),
-          if (videoUrl != null && videoUrl.isNotEmpty)
+          if (ChatDesignStore.shared.value.flag('listingShowImages') &&
+              videoUrl != null &&
+              videoUrl.isNotEmpty)
             Padding(
               padding: const EdgeInsets.all(12),
               child: Align(
@@ -20794,28 +20963,30 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
             child:
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: isFree
-                        ? const Color(0xFFD1FAE5)
-                        : const Color(0xFFEDE9FE),
-                    borderRadius: BorderRadius.circular(12),
+                if (ChatDesignStore.shared.value.flag('listingShowPrice'))
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isFree
+                          ? const Color(0xFFD1FAE5)
+                          : const Color(0xFFEDE9FE),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                        isFree
+                            ? 'חינם'
+                            : '₪${widget.item['price']?.toStringAsFixed(0) ?? ''}${widget.item['category'] == 'נדל״ן' && propertyDetails['deal_type'] == 'rent' ? ' לחודש' : ''}',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                            color: isFree
+                                ? const Color(0xFF065F46)
+                                : const Color(0xFF5B21B6))),
                   ),
-                  child: Text(
-                      isFree
-                          ? 'חינם'
-                          : '₪${widget.item['price']?.toStringAsFixed(0) ?? ''}${widget.item['category'] == 'נדל״ן' && propertyDetails['deal_type'] == 'rent' ? ' לחודש' : ''}',
-                      style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                          color: isFree
-                              ? const Color(0xFF065F46)
-                              : const Color(0xFF5B21B6))),
-                ),
                 const Spacer(),
-                if (widget.item['city'] != null)
+                if (ChatDesignStore.shared.value.flag('listingShowLocation') &&
+                    widget.item['city'] != null)
                   Row(children: [
                     Icon(Icons.location_on_outlined, size: 16, color: kSubtext),
                     Text(widget.item['city'],
@@ -20830,16 +21001,17 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                           fontSize: 20, fontWeight: FontWeight.bold)),
                 ),
                 const SizedBox(width: 8),
-                Tooltip(
-                  message: _listingAiTooltip,
-                  child: TextButton.icon(
-                    onPressed: () => _openListingAi(context, widget.item,
-                        widget.token, widget.me, widget.socket),
-                    icon: const Icon(Icons.auto_awesome, size: 21),
-                    label: const Text('AI'),
-                    style: TextButton.styleFrom(foregroundColor: kPrimary),
+                if (ChatDesignStore.shared.value.flag('listingShowAi'))
+                  Tooltip(
+                    message: _listingAiTooltip,
+                    child: TextButton.icon(
+                      onPressed: () => _openListingAi(context, widget.item,
+                          widget.token, widget.me, widget.socket),
+                      icon: const Icon(Icons.auto_awesome, size: 21),
+                      label: const Text('AI'),
+                      style: TextButton.styleFrom(foregroundColor: kPrimary),
+                    ),
                   ),
-                ),
               ]),
               if (widget.item['description'] != null &&
                   widget.item['description'].toString().isNotEmpty) ...[
@@ -20875,7 +21047,8 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                       icon: Icons.handshake_outlined,
                       text: 'מחיר גמיש',
                     ),
-                  if (_listingPublishedAt(widget.item['created_at']).isNotEmpty)
+                  if (ChatDesignStore.shared.value.flag('listingShowDate') &&
+                      _listingPublishedAt(widget.item['created_at']).isNotEmpty)
                     _ListingDetailBadge(
                       icon: Icons.calendar_today_outlined,
                       text: _listingPublishedAt(widget.item['created_at']),
@@ -21134,80 +21307,82 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                 ),
               const SizedBox(height: 20),
               // Seller info
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12)),
-                child: Column(children: [
-                  Row(children: [
-                    UserAvatar(
-                      radius: 24,
-                      picUrl: widget.item['seller_pic']?.toString(),
-                      name: widget.item['seller_name']?.toString() ?? '?',
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                        child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                          Text(widget.item['seller_name'] ?? '',
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w600, fontSize: 15)),
-                          Text('המפרסם',
-                              style: TextStyle(color: kSubtext, fontSize: 13)),
-                        ])),
-                  ]),
-                  if ((widget.item['seller_phone'] ?? '')
-                          .toString()
-                          .isNotEmpty ||
-                      (widget.item['seller_email'] ?? '')
-                          .toString()
-                          .isNotEmpty) ...[
-                    const Divider(height: 24),
+              if (ChatDesignStore.shared.value.flag('listingShowPublisher'))
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12)),
+                  child: Column(children: [
+                    Row(children: [
+                      UserAvatar(
+                        radius: 24,
+                        picUrl: widget.item['seller_pic']?.toString(),
+                        name: widget.item['seller_name']?.toString() ?? '?',
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                            Text(widget.item['seller_name'] ?? '',
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w600, fontSize: 15)),
+                            Text('המפרסם',
+                                style:
+                                    TextStyle(color: kSubtext, fontSize: 13)),
+                          ])),
+                    ]),
                     if ((widget.item['seller_phone'] ?? '')
-                        .toString()
-                        .isNotEmpty)
-                      ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading:
-                            const Icon(Icons.phone_outlined, color: kPrimary),
-                        title: const Text('טלפון'),
-                        subtitle: SelectableText(
-                            widget.item['seller_phone'].toString()),
-                        trailing: IconButton(
-                          tooltip: 'התקשר',
-                          onPressed: () => launchUrl(Uri(
-                            scheme: 'tel',
-                            path: widget.item['seller_phone'].toString(),
-                          )),
-                          icon: const Icon(Icons.call_outlined),
+                            .toString()
+                            .isNotEmpty ||
+                        (widget.item['seller_email'] ?? '')
+                            .toString()
+                            .isNotEmpty) ...[
+                      const Divider(height: 24),
+                      if ((widget.item['seller_phone'] ?? '')
+                          .toString()
+                          .isNotEmpty)
+                        ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading:
+                              const Icon(Icons.phone_outlined, color: kPrimary),
+                          title: const Text('טלפון'),
+                          subtitle: SelectableText(
+                              widget.item['seller_phone'].toString()),
+                          trailing: IconButton(
+                            tooltip: 'התקשר',
+                            onPressed: () => launchUrl(Uri(
+                              scheme: 'tel',
+                              path: widget.item['seller_phone'].toString(),
+                            )),
+                            icon: const Icon(Icons.call_outlined),
+                          ),
                         ),
-                      ),
-                    if ((widget.item['seller_email'] ?? '')
-                        .toString()
-                        .isNotEmpty)
-                      ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading:
-                            const Icon(Icons.email_outlined, color: kPrimary),
-                        title: const Text('אימייל'),
-                        subtitle: SelectableText(
-                            widget.item['seller_email'].toString()),
-                        trailing: IconButton(
-                          tooltip: 'שלח אימייל',
-                          onPressed: () => launchUrl(Uri(
-                            scheme: 'mailto',
-                            path: widget.item['seller_email'].toString(),
-                          )),
-                          icon: const Icon(Icons.send_outlined),
+                      if ((widget.item['seller_email'] ?? '')
+                          .toString()
+                          .isNotEmpty)
+                        ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading:
+                              const Icon(Icons.email_outlined, color: kPrimary),
+                          title: const Text('אימייל'),
+                          subtitle: SelectableText(
+                              widget.item['seller_email'].toString()),
+                          trailing: IconButton(
+                            tooltip: 'שלח אימייל',
+                            onPressed: () => launchUrl(Uri(
+                              scheme: 'mailto',
+                              path: widget.item['seller_email'].toString(),
+                            )),
+                            icon: const Icon(Icons.send_outlined),
+                          ),
                         ),
-                      ),
-                  ],
-                ]),
-              ),
+                    ],
+                  ]),
+                ),
               const SizedBox(height: 20),
               if (isOwner) ...[
                 OutlinedButton.icon(
@@ -24626,7 +24801,10 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen>
+    with RemoteChatDesignState<ChatScreen> {
+  @override
+  String get chatDesignApi => kApi;
   final _attachmentAnchorKey = GlobalKey();
   bool _attachmentMenuOpen = false;
   bool _attachmentPickerOpen = false;
@@ -24869,6 +25047,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    widget.socket?.on('chat:design-updated', onRemoteChatDesignChanged);
     _expressionPanel.addListener(_refreshExpressionPanel);
     _scrollCtrl.openSearchMessage(
         widget.searchMessageId, widget.searchMessageAt);
@@ -25252,6 +25431,9 @@ class _ChatScreenState extends State<ChatScreen> {
       if (map['forward_allowed'] == true) 'forwardAllowed': true,
       if (map['image_classification'] != null)
         'classification': map['image_classification'],
+      'fileSize': uploadMetadataNumber(map['file_size']),
+      'mediaDurationSeconds':
+          uploadMetadataNumber(map['media_duration_seconds']),
       if (map['audio_duration_seconds'] != null)
         'audioDurationSeconds':
             double.tryParse(map['audio_duration_seconds'].toString()),
@@ -25488,14 +25670,12 @@ class _ChatScreenState extends State<ChatScreen> {
         _serverMessagesFingerprint = null;
         _loadMessages(silent: true);
       }
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(
-            _isScanStopped(data)
-                ? _scanStoppedNotice(data)
-                : data['reason']?.toString() ??
-                    'הסריקה בוטלה אוטומטית לאחר המתנה ממושכת',
-            textDirection: TextDirection.rtl),
-      ));
+      showTransientChatNotice(
+          context,
+          _isScanStopped(data)
+              ? _scanStoppedNotice(data)
+              : data['reason']?.toString() ??
+                  'הסריקה בוטלה אוטומטית לאחר המתנה ממושכת');
     };
     widget.socket?.on('scan:cancelled', _scanCancelledSocketHandler);
 
@@ -25514,12 +25694,13 @@ class _ChatScreenState extends State<ChatScreen> {
                   .contains(message['status'])));
         }
       }
-      ScaffoldMessenger.of(context)
-          .showSnackBar(_contentWarningSnackBar(_isVideoModeration(data)
+      _showContentWarning(
+          context,
+          _isVideoModeration(data)
               ? blockedVideoMessage
               : _isSenderFilterRejection(data)
                   ? _senderFilterRejectionMessage(data)
-                  : data['reason']?.toString() ?? 'ההודעה נחסמה'));
+                  : data['reason']?.toString() ?? 'ההודעה נחסמה');
     };
     widget.socket?.on('message:rejected', _messageRejectedSocketHandler);
 
@@ -25623,6 +25804,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    widget.socket?.off('chat:design-updated', onRemoteChatDesignChanged);
     _uploadNoticesSubscription.cancel();
     _cleanupSubscription.cancel();
     _receivingFilterSubscription.cancel();
@@ -25785,6 +25967,12 @@ class _ChatScreenState extends State<ChatScreen> {
   late final _outbox = PrivateMessageOutbox(
       widget.me?['id']?.toString() ?? '', widget.recipient['id'].toString());
   bool _sendingText = false;
+  int _composerSendPresses = 0;
+  void _sendFromComposer() {
+    _composerSendPresses++;
+    _send();
+  }
+
   bool get _useOutbox =>
       (widget.me?['id']?.toString().isNotEmpty ?? false) &&
       !{kSystemGuideId, kSafeInformationAiId, kScanBotId}
@@ -25863,8 +26051,8 @@ class _ChatScreenState extends State<ChatScreen> {
           if (mounted) {
             message.remove('outboxId');
             _markBlockedContent(message['id'].toString());
-            ScaffoldMessenger.of(context).showSnackBar(_contentWarningSnackBar(
-                data['error']?.toString() ?? 'ההודעה נחסמה'));
+            _showContentWarning(
+                context, data['error']?.toString() ?? 'ההודעה נחסמה');
           }
           return;
         }
@@ -25909,6 +26097,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _send({String? stickerId}) async {
+    if (ChatDesignStore.shared.value.flag('dismissKeyboardOnSend'))
+      _msgFocusNode.unfocus();
     if (_sendingText) return;
     _sendingText = true;
     try {
@@ -26077,11 +26267,11 @@ class _ChatScreenState extends State<ChatScreen> {
           if (errorCode == 'CHAT_CONTENT_BLOCKED') {
             _markBlockedContent(tempId);
           }
-          ScaffoldMessenger.of(context).showSnackBar(
-            errorCode == 'CHAT_CONTENT_BLOCKED'
-                ? _contentWarningSnackBar(error)
-                : SnackBar(content: Text(error)),
-          );
+          if (errorCode == 'CHAT_CONTENT_BLOCKED') {
+            _showContentWarning(context, error);
+          } else {
+            showTransientChatNotice(context, error);
+          }
         }
       } catch (_) {
         if (!mounted) return;
@@ -26111,9 +26301,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final loaded = await _loadContactFilterComparison();
     if (!mounted) return false;
     if (!loaded || _outgoingFilter == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('לא ניתן לטעון כעת את נתוני הסינון')),
-      );
+      showTransientChatNotice(context, 'לא ניתן לטעון כעת את נתוני הסינון');
       return false;
     }
 
@@ -27090,6 +27278,7 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     final destination = _uploadDestination;
+    final sendPresses = _composerSendPresses;
     final accountId = widget.me?['id'];
     bool currentDestination() =>
         mounted &&
@@ -27185,6 +27374,7 @@ class _ChatScreenState extends State<ChatScreen> {
         );
         if (result == null || result.files.isEmpty) return;
         final file = result.files.single;
+        _finishMediaExpressionSelection(_expressionPanel);
         await _uploadAndSend(file.xFile, file.name, 'image');
         return;
       }
@@ -27198,6 +27388,7 @@ class _ChatScreenState extends State<ChatScreen> {
         );
         if (result == null || result.files.isEmpty) return;
         final file = result.files.single;
+        _finishMediaExpressionSelection(_expressionPanel);
         await _uploadAndSend(
           file.xFile,
           file.name,
@@ -27219,6 +27410,7 @@ class _ChatScreenState extends State<ChatScreen> {
           imageQuality: 90,
         );
         if (picked != null) {
+          _finishMediaExpressionSelection(_expressionPanel);
           await _uploadAndSend(picked, 'sticker_${picked.name}', 'image');
         }
         return;
@@ -27258,7 +27450,8 @@ class _ChatScreenState extends State<ChatScreen> {
       beforePicker = _msgCtrl.value;
     }
 
-    _msgFocusNode.unfocus();
+    if (ChatDesignStore.shared.value.flag('dismissKeyboardOnPicker'))
+      _msgFocusNode.unfocus();
     await _showExpressionPicker(
       context,
       widget.token,
@@ -27284,7 +27477,11 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (currentDestination()) {
       _restoreExpressionSelection(_msgCtrl, beforePicker);
-      _msgFocusNode.requestFocus();
+      if (_composerSendPresses == sendPresses &&
+          _expressionPanel.restoreFocus &&
+          ChatDesignStore.shared.value.flag('restoreKeyboardAfterPicker')) {
+        _msgFocusNode.requestFocus();
+      }
     }
   }
 
@@ -27642,6 +27839,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final destination = _uploadDestination;
     try {
       final image = parseKeyboardInsertedImage(content);
+      _finishMediaExpressionSelection(_expressionPanel);
       if (!await _preparePrivateUpload('image') || !mounted) return;
       await _uploadAndSend(
         XFile.fromData(image.bytes,
@@ -27708,6 +27906,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final uploadMessageId = _newUploadMessageId('uploading_');
     batchOrder?.uploadIds.add(uploadMessageId);
     final uploadStartedAt = DateTime.now();
+    final uploadFileSize = await (file is XFile
+        ? file.length()
+        : Future<int>.value((file as PlatformFile).size));
     if (showInlineProgress && mounted) {
       setState(() {
         _messages.add({
@@ -27721,6 +27922,7 @@ class _ChatScreenState extends State<ChatScreen> {
           'isFile': true,
           'fileType': fileType,
           'fileName': fileName,
+          'fileSize': uploadFileSize,
           'uploadStartedAt': uploadStartedAt.toIso8601String(),
         });
       });
@@ -27826,6 +28028,9 @@ class _ChatScreenState extends State<ChatScreen> {
             _messages.add({
               'id': _newUploadMessageId('temp_'),
               'clientUploadId': data['clientUploadId'],
+              'fileSize': uploadMetadataNumber(data['fileSize']),
+              'mediaDurationSeconds':
+                  uploadMetadataNumber(data['mediaDurationSeconds']),
               'text': fileName,
               'from': widget.me?['id'],
               'time': _nowTime(),
@@ -27867,6 +28072,9 @@ class _ChatScreenState extends State<ChatScreen> {
             _messages.add({
               'id': _newUploadMessageId('temp_'),
               'clientUploadId': data['clientUploadId'],
+              'fileSize': uploadMetadataNumber(data['fileSize']),
+              'mediaDurationSeconds':
+                  uploadMetadataNumber(data['mediaDurationSeconds']),
               'text': fileName,
               'from': widget.me?['id'],
               'time': _nowTime(),
@@ -27883,15 +28091,9 @@ class _ChatScreenState extends State<ChatScreen> {
         });
         _scrollToBottom();
         if (showNotice) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                  'הקובץ בהמתנה לסריקה — יישלח אוטומטית כשהשירות יחזור',
-                  textDirection: TextDirection.rtl),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 4),
-            ),
-          );
+          showTransientChatNotice(
+              context, 'הקובץ בהמתנה לסריקה — יישלח אוטומטית כשהשירות יחזור',
+              backgroundColor: Colors.orange);
         }
         return false;
       case _FileUploadOutcome.scanBot:
@@ -27982,6 +28184,9 @@ class _ChatScreenState extends State<ChatScreen> {
             _messages.add({
               'id': messageId,
               'clientUploadId': data['clientUploadId'],
+              'fileSize': uploadMetadataNumber(data['fileSize']),
+              'mediaDurationSeconds':
+                  uploadMetadataNumber(data['mediaDurationSeconds']),
               'text': fileName,
               'from': widget.me?['id'],
               'time': _nowTime(),
@@ -28007,12 +28212,8 @@ class _ChatScreenState extends State<ChatScreen> {
     if (msg.contains('נחסמה')) {
       _showBlockedDialog(msg);
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(msg, textDirection: TextDirection.rtl),
-          backgroundColor: Colors.red.shade700,
-        ),
-      );
+      showTransientChatNotice(context, msg,
+          backgroundColor: Colors.red.shade700);
     }
   }
 
@@ -28080,7 +28281,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: ElevatedButton(
                   onPressed: () => Navigator.pop(dialogContext),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: kPrimary,
+                    backgroundColor: ChatDesignStore.shared.value
+                        .color('accentColor', kPrimary),
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12)),
@@ -28116,15 +28318,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final loaded = await _loadContactFilterComparison();
     if (!mounted) return;
     if (!loaded || _outgoingFilter == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('לא ניתן לטעון כעת את נתוני הסינון'),
+      showTransientChatNotice(context, 'לא ניתן לטעון כעת את נתוני הסינון',
           action: SnackBarAction(
             label: 'נסה שוב',
             onPressed: _showContactFilterStatus,
-          ),
-        ),
-      );
+          ));
       return;
     }
     var personalDraft = Map<String, bool>.from(_outgoingFilter!);
@@ -28315,10 +28513,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => applyChatDesign(context, _buildChat);
+
+  Widget _buildChat(BuildContext context) {
     final recipientName = widget.recipient['name'] as String? ?? '';
     return Scaffold(
-      backgroundColor: kChatBg,
+      backgroundColor:
+          ChatDesignStore.shared.value.color('chatBackground', kChatBg),
       appBar: (_expressionPanel.isOpen ||
                   MediaQuery.sizeOf(context).height -
                           MediaQuery.viewInsetsOf(context).bottom <
@@ -28329,7 +28530,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   250
           ? null
           : AppBar(
-              backgroundColor: kPrimary,
+              backgroundColor:
+                  ChatDesignStore.shared.value.color('accentColor', kPrimary),
               leading: _selectedMessageKeys.isNotEmpty
                   ? IconButton(
                       tooltip: 'ביטול הבחירה',
@@ -28408,26 +28610,6 @@ class _ChatScreenState extends State<ChatScreen> {
                     icon: const Icon(Icons.forward),
                   ),
                 if (_selectedMessageKeys.isEmpty) ...[
-                  if (!kIsWeb)
-                    IconButton(
-                      icon:
-                          const Icon(Icons.phone_outlined, color: Colors.white),
-                      onPressed: widget.recipient['id'] == kScanBotId
-                          ? null
-                          : () {
-                              if (widget.onVoiceCall != null) {
-                                widget.onVoiceCall!();
-                              } else {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                        'יש לפתוח את השיחה מרשימת אנשי הקשר'),
-                                  ),
-                                );
-                              }
-                            },
-                      tooltip: 'שיחת קול',
-                    ),
                   PopupMenuButton<String>(
                     icon: const Icon(Icons.more_vert),
                     tooltip: 'אפשרויות שיחה',
@@ -28901,11 +29083,15 @@ class _ChatScreenState extends State<ChatScreen> {
                               ),
                   ),
 
-                  // Reserve space so typing never resizes the message history.
+                  // Hide the typing row completely while the conversation is idle.
                   SizedBox(
                     key: const ValueKey('private-typing-indicator'),
                     width: double.infinity,
-                    height: 28,
+                    height: _isTyping &&
+                            ChatDesignStore.shared.value
+                                .flag('showTypingIndicator')
+                        ? 28
+                        : 0,
                     child: _isTyping
                         ? Align(
                             alignment: Alignment.centerLeft,
@@ -29020,7 +29206,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   Container(
                     color: Colors.white,
                     padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     child: Align(
                       alignment: Alignment.centerRight,
                       child: ConstrainedBox(
@@ -29032,7 +29218,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 onSend: _toggleVoiceRecording,
                                 onCancel: _cancelVoiceRecording)
                             : _ChatComposerBar(
-                                compact: constraints.maxHeight < 180,
+                                compact: constraints.maxHeight < 260,
                                 controller: _msgCtrl,
                                 focusNode: _msgFocusNode,
                                 input: Focus(
@@ -29046,6 +29232,11 @@ class _ChatScreenState extends State<ChatScreen> {
                                     builder: (context, value, _) => TextField(
                                       controller: _msgCtrl,
                                       focusNode: _msgFocusNode,
+                                      onTapOutside: ChatDesignStore.shared.value
+                                              .flag(
+                                                  'dismissComposerOnOutsideTap')
+                                          ? (_) => _msgFocusNode.unfocus()
+                                          : null,
                                       contentInsertionConfiguration: !kIsWeb &&
                                               defaultTargetPlatform ==
                                                   TargetPlatform.android &&
@@ -29071,7 +29262,10 @@ class _ChatScreenState extends State<ChatScreen> {
                                       maxLines: 4,
                                       minLines: 1,
                                       textInputAction: TextInputAction.newline,
-                                      onTap: _expressionPanel.close,
+                                      onTap: ChatDesignStore.shared.value
+                                              .flag('closePickerOnOutsideTap')
+                                          ? _expressionPanel.close
+                                          : null,
                                       onChanged: (_) {
                                         _keyboardClick.click();
                                         _onTyping();
@@ -29081,16 +29275,25 @@ class _ChatScreenState extends State<ChatScreen> {
                                             ? 'כתוב הודעה...'
                                             : 'הנמען אינו מקבל תוכן טקסטואלי',
                                         hintTextDirection: TextDirection.rtl,
-                                        hintStyle: const TextStyle(
-                                            fontSize: 13, color: kSubtext),
-                                        contentPadding:
-                                            const EdgeInsets.symmetric(
-                                                horizontal: 4, vertical: 9),
+                                        hintStyle: TextStyle(
+                                            fontSize: ChatDesignStore
+                                                .shared.value
+                                                .number('composerFontSize', 13),
+                                            color: kSubtext),
+                                        contentPadding: EdgeInsets.symmetric(
+                                            horizontal: 4,
+                                            vertical: ChatDesignStore
+                                                .shared.value
+                                                .number(
+                                                    'composerVerticalPadding',
+                                                    8)),
                                         border: InputBorder.none,
                                         isDense: true,
                                       ),
-                                      style: const TextStyle(
-                                          fontSize: 13, color: kTextDark),
+                                      style: TextStyle(
+                                          fontSize: ChatDesignStore.shared.value
+                                              .number('composerFontSize', 13),
+                                          color: kTextDark),
                                       onSubmitted: (_) => _send(),
                                     ),
                                   ),
@@ -29098,7 +29301,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 attachmentKey: _attachmentAnchorKey,
                                 onAttach: _showAttachMenu,
                                 onRecord: _toggleVoiceRecording,
-                                onSend: _send,
+                                onSend: _sendFromComposer,
                                 onStickers: () =>
                                     _showExpressions(inlineEmoji: false),
                                 onEmoji: () =>
@@ -29153,16 +29356,29 @@ class _ChatComposerBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final design = ChatDesignStore.shared.value;
+    final iconSize = design.number('composerIconSize', 20);
+    final iconColor = design.color('composerIconColor', kPrimary);
     return TextFieldTapRegion(
       child: ListenableBuilder(
         listenable: Listenable.merge([controller, focusNode]),
         child: input,
         builder: (context, field) {
+          final toolsVisible =
+              switch (design.choice('composerToolsVisibility', 'focused')) {
+            'always' => true,
+            'withText' => hasChatComposerText(controller.text),
+            _ => focusNode.hasFocus,
+          };
           final hasText = hasChatComposerText(controller.text);
           final formattingSelection =
               canSendText && hasChatFormattingSelection(controller.value);
-          final shortcutHeight = compact ? 24.0 : 36.0;
-          final actionSize = compact ? 36.0 : 44.0;
+          final shortcutHeight = compact
+              ? math.min(28.0, design.number('composerShortcutHeight', 24))
+              : design.number('composerShortcutHeight', 36);
+          final actionSize = compact
+              ? math.min(40.0, design.number('composerActionSize', 36))
+              : design.number('composerActionSize', 44);
           return Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -29171,11 +29387,17 @@ class _ChatComposerBar extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Container(
+                      constraints: BoxConstraints(
+                          minHeight: design.number('composerMinHeight', 36)),
                       decoration: BoxDecoration(
-                        color: const Color(0xFFF0F6FC),
+                        color: design.color(
+                            'composerBackground', const Color(0xFFF0F6FC)),
                         borderRadius: BorderRadius.circular(22),
                         border: Border.all(
-                            color: const Color(0xFFC5DFF2), width: 1.5),
+                          color: design.color(
+                              'composerBorderColor', const Color(0xFFC5DFF2)),
+                          width: 1.5,
+                        ),
                       ),
                       child: Row(
                         textDirection: TextDirection.rtl,
@@ -29184,29 +29406,41 @@ class _ChatComposerBar extends StatelessWidget {
                           IconButton(
                             key: attachmentKey,
                             tooltip: 'צירוף קובץ',
-                            icon: const Icon(Icons.attach_file,
-                                size: 18, color: kSubtext),
+                            icon: Icon(
+                              Icons.attach_file,
+                              size: iconSize,
+                              color: iconColor,
+                            ),
                             onPressed: onAttach,
                             padding: const EdgeInsets.all(8),
                             style: const ButtonStyle(
-                                tapTargetSize:
-                                    MaterialTapTargetSize.shrinkWrap),
-                            constraints: const BoxConstraints.tightFor(
-                                width: 36, height: 36),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            constraints: BoxConstraints.tightFor(
+                              width: math.max(36, iconSize + 16),
+                              height: math.max(36, iconSize + 16),
+                            ),
                           ),
                           Expanded(child: field!),
                         ],
                       ),
                     ),
                   ),
-                  const SizedBox(width: 6),
+                  SizedBox(width: design.number('composerIconGap', 6)),
                   IconButton(
                     key: const ValueKey('chat-composer-action'),
                     tooltip: hasText ? 'שלח הודעה' : 'הקלט הודעה קולית',
-                    onPressed:
-                        hasText ? (canSendText ? onSend : null) : onRecord,
+                    onPressed: hasText
+                        ? (canSendText
+                            ? () {
+                                if (design.flag('dismissKeyboardOnSend'))
+                                  focusNode.unfocus();
+                                onSend();
+                              }
+                            : null)
+                        : onRecord,
                     style: IconButton.styleFrom(
-                      backgroundColor: kPrimary,
+                      backgroundColor: design.color('accentColor', kPrimary),
                       disabledBackgroundColor: Colors.grey,
                       foregroundColor: Colors.white,
                       disabledForegroundColor: Colors.white,
@@ -29215,7 +29449,8 @@ class _ChatComposerBar extends StatelessWidget {
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       padding: EdgeInsets.zero,
                     ),
-                    icon: Icon(hasText ? Icons.send : Icons.mic, size: 20),
+                    icon:
+                        Icon(hasText ? Icons.send : Icons.mic, size: iconSize),
                   ),
                 ],
               ),
@@ -29223,60 +29458,77 @@ class _ChatComposerBar extends StatelessWidget {
               SizedBox(
                 key: const ValueKey('chat-composer-shortcuts'),
                 width: double.infinity,
-                height: shortcutHeight,
-                child: (hasText || focusNode.hasFocus)
-                    ? Row(
-                        textDirection: TextDirection.rtl,
-                        children: [
-                          IconButton(
-                            key: const ValueKey('chat-stickers-shortcut'),
-                            tooltip: 'מדבקות',
-                            icon: const Icon(Icons.sticky_note_2_outlined,
-                                size: 18, color: kPrimary),
-                            onPressed: onStickers,
-                            padding: EdgeInsets.all(compact ? 3 : 8),
-                            style: const ButtonStyle(
-                                tapTargetSize:
-                                    MaterialTapTargetSize.shrinkWrap),
-                            constraints: BoxConstraints.tightFor(
-                                width: 36, height: shortcutHeight),
-                          ),
-                          IconButton(
-                            key: const ValueKey('chat-inline-emoji-shortcut'),
-                            tooltip: 'אימוג׳י',
-                            icon: const Icon(Icons.emoji_emotions_outlined,
-                                size: 19, color: kPrimary),
-                            onPressed: onEmoji,
-                            padding: EdgeInsets.all(compact ? 3 : 8),
-                            style: const ButtonStyle(
-                                tapTargetSize:
-                                    MaterialTapTargetSize.shrinkWrap),
-                            constraints: BoxConstraints.tightFor(
-                                width: 36, height: shortcutHeight),
-                          ),
-                          if (formattingSelection) ...[
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Align(
-                                alignment: Alignment.centerRight,
-                                child: SizedBox(
-                                  width: ChatFormattingToolbar.preferredWidth(
-                                      compact: compact),
-                                  child: ChatFormattingToolbar(
-                                    key: const ValueKey(
-                                        'chat-formatting-toolbar'),
-                                    controller: controller,
-                                    focusNode: focusNode,
-                                    compact: compact,
-                                    enabled: canSendText,
-                                  ),
-                                ),
-                              ),
+                height: (toolsVisible &&
+                        (design.flag('showComposerEmoji') ||
+                            design.flag('showComposerStickers') ||
+                            formattingSelection))
+                    ? shortcutHeight
+                    : 0,
+                child: Row(
+                  textDirection: TextDirection.rtl,
+                  children: [
+                    if (toolsVisible && design.flag('showComposerStickers'))
+                      IconButton(
+                        key: const ValueKey('chat-stickers-shortcut'),
+                        tooltip: 'מדבקות',
+                        icon: Icon(
+                          Icons.sticky_note_2_outlined,
+                          size: math.min(iconSize, shortcutHeight - 6),
+                          color: iconColor,
+                        ),
+                        onPressed: onStickers,
+                        padding: EdgeInsets.all(math.max(
+                            0, math.min(3, (shortcutHeight - iconSize) / 2))),
+                        style: const ButtonStyle(
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        constraints: BoxConstraints.tightFor(
+                          width: 36,
+                          height: shortcutHeight,
+                        ),
+                      ),
+                    if (toolsVisible && design.flag('showComposerEmoji'))
+                      IconButton(
+                        key: const ValueKey('chat-inline-emoji-shortcut'),
+                        tooltip: 'אימוג׳י',
+                        icon: Icon(
+                          Icons.emoji_emotions_outlined,
+                          size: math.min(iconSize, shortcutHeight - 6),
+                          color: iconColor,
+                        ),
+                        onPressed: onEmoji,
+                        padding: EdgeInsets.all(math.max(
+                            0, math.min(3, (shortcutHeight - iconSize) / 2))),
+                        style: const ButtonStyle(
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        constraints: BoxConstraints.tightFor(
+                          width: 36,
+                          height: shortcutHeight,
+                        ),
+                      ),
+                    if (toolsVisible && formattingSelection) ...[
+                      SizedBox(width: design.number('composerIconGap', 6)),
+                      Expanded(
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: SizedBox(
+                            width: ChatFormattingToolbar.preferredWidth(
+                              compact: compact,
                             ),
-                          ],
-                        ],
-                      )
-                    : null,
+                            child: ChatFormattingToolbar(
+                              key: const ValueKey('chat-formatting-toolbar'),
+                              controller: controller,
+                              focusNode: focusNode,
+                              compact: compact,
+                              enabled: canSendText,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ),
             ],
           );
@@ -30396,12 +30648,15 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
             ? segments.last
             : 'הקלטה';
     return SizedBox(
-        width: 285,
+        width: math.min(
+            ChatDesignStore.shared.value.number('voicePlayerWidth', 285),
+            MediaQuery.sizeOf(context).width * .86),
         child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (widget.showFileName)
+              if (widget.showFileName &&
+                  ChatDesignStore.shared.value.flag('showFileNames'))
                 Padding(
                     padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
                     child: Tooltip(
@@ -30440,29 +30695,59 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
                 ),
                 Expanded(
                     child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  AudioVisualizer(
-                      key: const ValueKey('voice-playback-visualizer'),
-                      value: totalMs > 0
-                          ? shownPosition.inMilliseconds / totalMs
-                          : 0,
-                      playing: _playing && !_loading && !_loadFailed,
-                      color: kPrimary),
-                  Directionality(
-                      textDirection: TextDirection.ltr,
-                      child: Slider(
-                        value: (_dragMs ?? _position.inMilliseconds.toDouble())
-                            .clamp(0, math.max(1, totalMs))
-                            .toDouble(),
-                        max: math.max(1, totalMs).toDouble(),
-                        label: _durationLabel(shownPosition),
-                        semanticFormatterCallback: (v) =>
-                            _durationLabel(Duration(milliseconds: v.round())),
-                        onChanged:
-                            canSeek ? (v) => setState(() => _dragMs = v) : null,
-                        onChangeEnd: canSeek
-                            ? (v) => _seek(Duration(milliseconds: v.round()))
-                            : null,
-                      )),
+                  SizedBox(
+                      height: ChatDesignStore.shared.value
+                              .flag('compactVoicePlayer')
+                          ? ChatDesignStore.shared.value
+                              .number('voiceWaveformHeight', 40)
+                          : 64,
+                      child: Stack(alignment: Alignment.center, children: [
+                        if (ChatDesignStore.shared.value
+                            .flag('showVoiceWaveform'))
+                          Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 24),
+                              child: AudioVisualizer(
+                                  key: const ValueKey(
+                                      'voice-playback-visualizer'),
+                                  value: totalMs > 0
+                                      ? shownPosition.inMilliseconds / totalMs
+                                      : 0,
+                                  playing:
+                                      _playing && !_loading && !_loadFailed,
+                                  color: kPrimary)),
+                        Directionality(
+                            textDirection: TextDirection.ltr,
+                            child: SliderTheme(
+                                data: SliderTheme.of(context).copyWith(
+                                    trackHeight: 2,
+                                    activeTrackColor:
+                                        kPrimary.withValues(alpha: .35),
+                                    inactiveTrackColor:
+                                        kPrimary.withValues(alpha: .08),
+                                    thumbShape: const RoundSliderThumbShape(
+                                        enabledThumbRadius: 6),
+                                    overlayShape: const RoundSliderOverlayShape(
+                                        overlayRadius: 12)),
+                                child: Slider(
+                                  value: (_dragMs ??
+                                          _position.inMilliseconds.toDouble())
+                                      .clamp(0, math.max(1, totalMs))
+                                      .toDouble(),
+                                  max: math.max(1, totalMs).toDouble(),
+                                  label: _durationLabel(shownPosition),
+                                  semanticFormatterCallback: (v) =>
+                                      _durationLabel(
+                                          Duration(milliseconds: v.round())),
+                                  onChanged: canSeek
+                                      ? (v) => setState(() => _dragMs = v)
+                                      : null,
+                                  onChangeEnd: canSeek
+                                      ? (v) => _seek(
+                                          Duration(milliseconds: v.round()))
+                                      : null,
+                                ))),
+                      ])),
                   if (_loading)
                     const Text('טוען הקלטה...', style: TextStyle(fontSize: 11))
                   else if (_loadFailed)
@@ -30624,8 +30909,16 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
 
   Widget _preview({required VoidCallback? onTap}) {
     return SizedBox(
-      width: 280,
-      height: 150,
+      width: math.min(
+          330,
+          ChatDesignStore.shared.value.number('mediaMaxWidth', 220) *
+              280 /
+              220),
+      height: math.min(
+          ChatDesignStore.shared.value.number('mediaMaxHeight', 380),
+          ChatDesignStore.shared.value.number('mediaMaxWidth', 220) *
+              150 /
+              220),
       child: Semantics(
         container: true,
         button: true,
@@ -30677,7 +30970,11 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
     }
     if (error != null) {
       return Container(
-        width: 280,
+        width: math.min(
+            330,
+            ChatDesignStore.shared.value.number('mediaMaxWidth', 220) *
+                280 /
+                220),
         constraints: const BoxConstraints(minHeight: 150),
         padding: const EdgeInsets.all(14),
         color: Colors.black87,
@@ -30717,7 +31014,11 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
         ? controller.value.aspectRatio
         : 16 / 9;
     return SizedBox(
-      width: 280,
+      width: math.min(
+          330,
+          ChatDesignStore.shared.value.number('mediaMaxWidth', 220) *
+              280 /
+              220),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(10),
         child: ColoredBox(
@@ -30843,7 +31144,7 @@ class _GroupDeliverySummary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) =>
-      MessageDetails(child: _buildDetails(context));
+      MessageDetails(maintainSize: false, child: _buildDetails(context));
 
   Widget _buildDetails(BuildContext context) {
     final deliveredCount = summary['deliveredCount'] as int? ?? 0;
@@ -30920,49 +31221,14 @@ class _DocumentModerationCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) => Container(
-        width: 285,
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: blocked ? const Color(0xFFFFF2F2) : const Color(0xFFFFF8E8),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: blocked ? const Color(0xFFF0B8B8) : const Color(0xFFF2D28B),
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (blocked) ...[
-              const Center(child: _SystemContentWarningArtwork()),
-              const SizedBox(height: 9),
-            ],
-            Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(
-                blocked ? Icons.gpp_bad_outlined : Icons.hourglass_top,
-                color: blocked ? Colors.red : Colors.orange,
-              ),
-              const SizedBox(width: 7),
-              Flexible(
-                child: Text(fileName,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    textDirection: TextDirection.rtl,
-                    style: const TextStyle(fontWeight: FontWeight.bold)),
-              ),
-            ]),
-            const SizedBox(height: 6),
-            Text(
-              blocked
-                  ? (reason ?? 'המסמך נחסם ולא נשלח')
-                  : 'המסמך ממתין לסריקה. לא ניתן לפתוח או להוריד אותו לפני אישור.',
-              textDirection: TextDirection.rtl,
-              textAlign: TextAlign.right,
-              style: const TextStyle(fontSize: 11, color: kSubtext),
-            ),
-          ],
-        ),
+  Widget build(BuildContext context) => RemoteCardNotice(
+        title: blocked ? 'המסמך נחסם' : 'המסמך ממתין לסריקה',
+        fileName: fileName,
+        details: blocked
+            ? (reason ?? 'המסמך נחסם ולא נשלח')
+            : 'לא ניתן לפתוח או להוריד את המסמך לפני אישור.',
+        icon: blocked ? Icons.block : Icons.hourglass_top,
+        compactSetting: blocked ? 'compactBlockedMedia' : 'compactWaitingCards',
       );
 }
 
@@ -30973,6 +31239,8 @@ Widget _pendingOwnUploadCard(Map<String, dynamic> message) =>
       startedAt: DateTime.tryParse(message['createdAt']?.toString() ?? '') ??
           DateTime.now(),
       scanning: true,
+      fileSize: uploadMetadataNumber(message['fileSize']),
+      durationSeconds: uploadMetadataNumber(message['mediaDurationSeconds']),
     );
 
 class _UploadProcessingCard extends StatefulWidget {
@@ -30980,11 +31248,14 @@ class _UploadProcessingCard extends StatefulWidget {
   final String fileType;
   final DateTime startedAt;
   final bool scanning;
+  final num? fileSize, durationSeconds;
   const _UploadProcessingCard(
       {required this.fileName,
       required this.startedAt,
       this.fileType = 'image',
-      this.scanning = false});
+      this.scanning = false,
+      this.fileSize,
+      this.durationSeconds});
 
   @override
   State<_UploadProcessingCard> createState() => _UploadProcessingCardState();
@@ -31005,20 +31276,16 @@ class _UploadProcessingCardState extends State<_UploadProcessingCard>
 
   @override
   Widget build(BuildContext context) {
-    final typeLabel = widget.fileType == 'video'
-        ? 'הווידאו'
-        : widget.fileType == 'document'
-            ? 'המסמך'
-            : widget.fileType == 'audio'
-                ? 'ההקלטה'
-                : 'התמונה';
     return AnimatedBuilder(
       animation: _controller,
       builder: (_, __) {
+        final compact = ChatDesignStore.shared.value.flag('compactScanCards') &&
+            (!widget.scanning ||
+                ChatDesignStore.shared.value.flag('compactWaitingCards'));
         final elapsed = DateTime.now().difference(widget.startedAt).inSeconds;
         return Container(
-          width: 285,
-          padding: const EdgeInsets.all(14),
+          width: ChatDesignStore.shared.value.number('scanCardWidth', 285),
+          padding: EdgeInsets.all(compact ? 10 : 16),
           decoration: BoxDecoration(
             gradient: const LinearGradient(
               colors: [Color(0xFFEAF6FD), Color(0xFFF8FCFF)],
@@ -31030,70 +31297,41 @@ class _UploadProcessingCardState extends State<_UploadProcessingCard>
             textDirection: TextDirection.rtl,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  RotationTransition(
+              UploadScanDetails(
+                name: widget.fileName,
+                phase: widget.fileType == 'audio'
+                    ? (widget.scanning ? 'מכין לשליחה' : 'מעלה')
+                    : widget.scanning
+                        ? 'סורק'
+                        : 'מעלה ואחר כך סורק',
+                metadata: ChatDesignStore.shared.value.flag('showScanMetadata')
+                    ? uploadScanMetadata(widget.fileType, widget.fileName,
+                        bytes: widget.fileSize,
+                        durationSeconds: widget.durationSeconds)
+                    : '',
+                elapsedSeconds: elapsed,
+                color: kPrimary,
+                secondaryColor: kSubtext,
+                icon: RotationTransition(
                     turns: _controller,
-                    child: const Icon(
-                      Icons.auto_awesome,
-                      color: kPrimary,
-                      size: 25,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.fileType == 'audio'
-                              ? (widget.scanning
-                                  ? 'מכין את ההקלטה לשליחה'
-                                  : 'מעלה את ההקלטה')
-                              : widget.scanning
-                                  ? 'סורק את $typeLabel'
-                                  : 'מעלה ואחר כך סורק את $typeLabel',
-                          style: const TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                        Text(
-                          widget.fileName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 11, color: kSubtext),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    '$elapsed שנ׳',
-                    style: const TextStyle(
-                      color: kPrimary,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
+                    child: const Icon(Icons.auto_awesome,
+                        color: kPrimary, size: 20)),
               ),
-              const SizedBox(height: 11),
+              if (!compact) ...[
+                const SizedBox(height: 8),
+                Text(
+                    widget.scanning
+                        ? 'הבדיקה מתבצעת ברקע. אפשר להמשיך בשיחה.'
+                        : 'הקובץ נשלח לשרת.',
+                    style: const TextStyle(fontSize: 11)),
+              ],
+              const SizedBox(height: 7),
               LinearProgressIndicator(
                 value: _controller.value,
                 minHeight: 5,
                 borderRadius: BorderRadius.circular(5),
                 color: kPrimary,
                 backgroundColor: const Color(0xFFD7EAF6),
-              ),
-              const SizedBox(height: 7),
-              Text(
-                widget.fileType == 'audio'
-                    ? (widget.scanning
-                        ? 'ההקלטה שמורה וממתינה לשליחה'
-                        : 'ההקלטה עולה לשרת')
-                    : widget.scanning
-                        ? 'הקובץ שמור וממתין לאישור הסריקה לפני שליחה'
-                        : elapsed >= 45
-                            ? 'ההעלאה עדיין מתבצעת; הקובץ טרם נשלח'
-                            : 'קודם העלאה לאחסון, אחריה בדיקת בטיחות וסינון',
-                style: const TextStyle(fontSize: 10, color: kSubtext),
               ),
             ],
           ),
@@ -31114,7 +31352,8 @@ class _AudioScanBadge extends StatelessWidget {
 }
 
 Widget _chatMessageStatusIcon(Map<String, dynamic> message, bool isMe) {
-  if (!isMe) return const SizedBox.shrink();
+  if (!isMe || !ChatDesignStore.shared.value.flag('showDeliveryStatus'))
+    return const SizedBox.shrink();
   switch (message['status'] as String? ?? 'sent') {
     case 'sending':
     case 'uploading':
@@ -31176,38 +31415,52 @@ class _ChatSenderLabel extends StatelessWidget {
           alignment: Alignment.centerRight,
           child: Tooltip(
             message: name,
-            child: Row(
-              textDirection: TextDirection.rtl,
+            child: Column(
               mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                UserAvatar(picUrl: avatarUrl, name: name, radius: 10),
-                const SizedBox(width: 5),
-                Flexible(
-                  child: Text(name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w500,
-                          color: Color(0xFF52758A))),
+                Row(
+                  textDirection: TextDirection.rtl,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    UserAvatar(picUrl: avatarUrl, name: name, radius: 10),
+                    const SizedBox(width: 5),
+                    Flexible(
+                      child: Text(name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w500,
+                              color: Color(0xFF52758A))),
+                    ),
+                    const SizedBox(width: 6),
+                    if (message['isEdited'] == true) ...[
+                      const Text('נערך',
+                          style: TextStyle(
+                              fontSize: 10,
+                              color: kSubtext,
+                              fontStyle: FontStyle.italic)),
+                      const SizedBox(width: 4),
+                    ],
+                    if (ChatDesignStore.shared.value.flag('showMessageTime') &&
+                        ChatDesignStore.shared.value.flag('timeBesideName'))
+                      Text(message['time']?.toString() ?? '',
+                          textDirection: TextDirection.ltr,
+                          style:
+                              const TextStyle(fontSize: 10, color: kSubtext)),
+                    if (isMe) ...[
+                      const SizedBox(width: 3),
+                      _chatMessageStatusIcon(message, isMe),
+                    ],
+                  ],
                 ),
-                const SizedBox(width: 6),
-                if (message['isEdited'] == true) ...[
-                  const Text('נערך',
-                      style: TextStyle(
-                          fontSize: 10,
-                          color: kSubtext,
-                          fontStyle: FontStyle.italic)),
-                  const SizedBox(width: 4),
-                ],
-                Text(message['time']?.toString() ?? '',
-                    textDirection: TextDirection.ltr,
-                    style: const TextStyle(fontSize: 10, color: kSubtext)),
-                if (isMe) ...[
-                  const SizedBox(width: 3),
-                  _chatMessageStatusIcon(message, isMe),
-                ],
+                if (ChatDesignStore.shared.value.flag('showMessageTime') &&
+                    !ChatDesignStore.shared.value.flag('timeBesideName'))
+                  Text(message['time']?.toString() ?? '',
+                      textDirection: TextDirection.ltr,
+                      style: const TextStyle(fontSize: 10, color: kSubtext)),
               ],
             ),
           ),
@@ -31310,52 +31563,46 @@ class _UploadResultCard extends StatelessWidget {
   Widget build(BuildContext context) {
     if (blocked && isVideo) return BlockedVideoNotice(fileName: fileName);
     if (blocked && !showBlockedArtwork) {
-      if (blockedPreviewUrl != null &&
-          authToken != null &&
-          previewExpiresAt != null) {
-        return _BlockedImagePreview(
-          url: blockedPreviewUrl!,
-          token: authToken!,
-          expiresAt: previewExpiresAt!,
-          builder: (image, status) => _imageNotice(image, expiryText: status),
-        );
-      }
-      if (blocked &&
-          imageUrl != null &&
-          blockedPreviewUrl == null &&
-          !contentPurged) {
-        return _imageNotice(
-          GestureDetector(
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) =>
-                    ImagePreviewScreen(url: imageUrl!, filename: fileName),
-              ),
-            ),
-            child: ColoredBox(
-              color: const Color(0xFFF2F4F7),
-              child: _PersistentMediaImage(
-                url: imageUrl!,
-                width: double.infinity,
-                height: 180,
-                fit: BoxFit.contain,
-                loadingBuilder: (_) => const Center(
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                errorBuilder: (_) =>
-                    const Center(child: Icon(Icons.broken_image_outlined)),
-              ),
-            ),
-          ),
-        );
-      }
-      return _imageNotice(
-        const ColoredBox(
-          color: Color(0xFFF2F4F7),
-          child: Center(child: Icon(Icons.image_not_supported_outlined)),
-        ),
-      );
+      return _imageNotice(const SizedBox.shrink());
+    }
+    if (!blocked && ChatDesignStore.shared.value.flag('compactErrorCards')) {
+      return InkWell(
+          onTap: ChatDesignStore.shared.value
+                      .choice('cardTapAction', 'details') ==
+                  'none'
+              ? null
+              : () => showDesignCardDetails<void>(
+                  context,
+                  (dialogContext) => AlertDialog(
+                        title: Text(title, textDirection: TextDirection.rtl),
+                        content: SingleChildScrollView(
+                            child: Text(
+                                [if (fileName != null) fileName!, reason]
+                                    .join('\n'),
+                                textDirection: TextDirection.rtl)),
+                        actions: [
+                          TextButton(
+                              onPressed: () => Navigator.pop(dialogContext),
+                              child: const Text('סגור'))
+                        ],
+                      )),
+          child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  textDirection: TextDirection.rtl,
+                  children: [
+                    const Icon(Icons.error_outline,
+                        color: Colors.red, size: 18),
+                    const SizedBox(width: 6),
+                    Flexible(
+                        child: Text(title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: ChatDesignStore.shared.value
+                                    .number('noticeFontSize', 12))))
+                  ])));
     }
     return _standardCard(context);
   }
@@ -31572,7 +31819,9 @@ class _ImageClassificationBadges extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) =>
-      MessageDetails(child: _buildDetails(context));
+      ChatDesignStore.shared.value.flag('showMediaMetadata')
+          ? MessageDetails(child: _buildDetails(context))
+          : const SizedBox.shrink();
 
   Widget _buildDetails(BuildContext context) {
     final raw = message['classification'];
@@ -31637,7 +31886,9 @@ class _DocumentClassificationSummary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) =>
-      MessageDetails(child: _buildDetails(context));
+      ChatDesignStore.shared.value.flag('showMediaMetadata')
+          ? MessageDetails(child: _buildDetails(context))
+          : const SizedBox.shrink();
 
   Widget _buildDetails(BuildContext context) {
     final raw = message['classification'];
@@ -32284,26 +32535,12 @@ class _ScanStoppedCard extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 3),
         child: notice == blockedVideoMessage
             ? BlockedVideoNotice(fileName: fileName)
-            : Container(
-                constraints: const BoxConstraints(maxWidth: 280),
-                margin: const EdgeInsets.symmetric(vertical: 5),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF0F5F9),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  if (fileName?.trim().isNotEmpty == true) ...[
-                    CopyableFileName(fileName!,
-                        style: const TextStyle(
-                            fontSize: 12, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 6),
-                  ],
-                  const Icon(Icons.stop_circle_outlined),
-                  const SizedBox(height: 6),
-                  Text(notice, textAlign: TextAlign.center),
-                ]),
-              ),
+            : RemoteCardNotice(
+                title: notice,
+                fileName: fileName,
+                details: notice,
+                icon: Icons.stop_circle_outlined,
+                compactSetting: 'compactErrorCards'),
       ),
     );
   }
@@ -32405,6 +32642,9 @@ class _MessageBubble extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: _UploadProcessingCard(
             fileName: fileName ?? uploadTypeLabel,
+            fileSize: uploadMetadataNumber(message['fileSize']),
+            durationSeconds:
+                uploadMetadataNumber(message['mediaDurationSeconds']),
             fileType: fileType ?? 'image',
             startedAt: DateTime.tryParse(
                     message['uploadStartedAt']?.toString() ?? '') ??
@@ -32422,6 +32662,9 @@ class _MessageBubble extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: _UploadProcessingCard(
             fileName: fileName ?? uploadTypeLabel,
+            fileSize: uploadMetadataNumber(message['fileSize']),
+            durationSeconds:
+                uploadMetadataNumber(message['mediaDurationSeconds']),
             fileType: fileType ?? 'audio',
             scanning: true,
             startedAt:
@@ -32612,18 +32855,25 @@ class _MessageBubble extends StatelessWidget {
       widthFactor: 1,
       alignment: _messageAlignment,
       child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 2),
+        margin: EdgeInsets.symmetric(
+            vertical: ChatDesignStore.shared.value.number('messageGap', 4) / 2),
         padding: bareObject
             ? EdgeInsets.zero
-            : const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+            : ChatDesignStore.shared.value.bubblePadding,
         constraints: BoxConstraints(
-          maxWidth:
-              MediaQuery.of(context).size.width * (isSafeAnswer ? 0.96 : 0.72),
+          maxWidth: MediaQuery.of(context).size.width *
+              (isSafeAnswer
+                  ? 0.96
+                  : ChatDesignStore.shared.value
+                      .number('privateBubbleWidth', .72)),
         ),
         decoration: bareObject
             ? null
             : BoxDecoration(
-                color: isSafeAnswer ? Colors.white : kIncoming,
+                color: isSafeAnswer
+                    ? Colors.white
+                    : ChatDesignStore.shared.value.color(
+                        isMe ? 'outgoingBubble' : 'incomingBubble', kIncoming),
                 borderRadius: BorderRadius.only(
                   topLeft: const Radius.circular(6),
                   topRight: const Radius.circular(6),
@@ -32643,7 +32893,9 @@ class _MessageBubble extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (isFile && fileUrl != null)
+            if (ChatDesignStore.shared.value.flag('showFileNames') &&
+                isFile &&
+                fileUrl != null)
               ChatFileName(
                 key: ValueKey('chat-filename-$fileUrl'),
                 api: kApi,
@@ -33547,15 +33799,22 @@ const _emojiCategories = <String, List<String>>{
 
 class _ExpressionPanelController extends ChangeNotifier {
   Widget? panel;
+  bool restoreFocus = true;
   Completer<void>? _closed;
   bool get isOpen => panel != null;
 
   Future<void> open(Widget Function(VoidCallback) builder) {
     if (isOpen) return _closed!.future;
+    restoreFocus = true;
     _closed = Completer<void>();
     panel = builder(close);
     notifyListeners();
     return _closed!.future;
+  }
+
+  void closeOutside() {
+    restoreFocus = false;
+    close();
   }
 
   void close() {
@@ -33583,31 +33842,41 @@ class _ExpressionPanel extends StatelessWidget {
         listenable: controller,
         builder: (context, _) {
           if (!controller.isOpen) return const SizedBox.shrink();
-          return PopScope(
-            canPop: false,
-            onPopInvokedWithResult: (didPop, _) {
-              if (!didPop) controller.close();
-            },
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: ConstrainedBox(
-                constraints:
-                    BoxConstraints(maxHeight: maxHeight, maxWidth: 900),
-                child: BottomSheet(
-                  onClosing: controller.close,
-                  enableDrag: false,
-                  constraints: const BoxConstraints(maxWidth: 900),
-                  shape: const RoundedRectangleBorder(
-                    borderRadius:
-                        BorderRadius.vertical(top: Radius.circular(12)),
+          return TextFieldTapRegion(
+              onTapOutside:
+                  ChatDesignStore.shared.value.flag('closePickerOnOutsideTap')
+                      ? (_) => controller.closeOutside()
+                      : null,
+              child: PopScope(
+                canPop: false,
+                onPopInvokedWithResult: (didPop, _) {
+                  if (!didPop) controller.close();
+                },
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: ConstrainedBox(
+                    constraints:
+                        BoxConstraints(maxHeight: maxHeight, maxWidth: 900),
+                    child: BottomSheet(
+                      onClosing: controller.close,
+                      enableDrag: false,
+                      constraints: const BoxConstraints(maxWidth: 900),
+                      shape: const RoundedRectangleBorder(
+                        borderRadius:
+                            BorderRadius.vertical(top: Radius.circular(12)),
+                      ),
+                      builder: (_) => controller.panel!,
+                    ),
                   ),
-                  builder: (_) => controller.panel!,
                 ),
-              ),
-            ),
-          );
+              ));
         },
       );
+}
+
+void _finishMediaExpressionSelection(_ExpressionPanelController controller) {
+  controller.closeOutside();
+  FocusManager.instance.primaryFocus?.unfocus();
 }
 
 Future<void> _showExpressionPicker(
@@ -33627,7 +33896,23 @@ Future<void> _showExpressionPicker(
         stickersAllowed: stickersAllowed,
         inlineEmojiAllowed: inlineEmojiAllowed,
         blockedLabel: blockedLabel,
-        onSelected: onSelected,
+        onSelected: (choice) async {
+          final selection = onSelected(choice);
+          // Media is sent directly; the composer should not resume typing.
+          final directMedia = choice.startsWith(_remoteStickerPrefix) ||
+              choice.startsWith(_originalExpressionPrefix) ||
+              choice.startsWith(_sharedGifPrefix) ||
+              choice.startsWith(_stickerPrefix) ||
+              choice.startsWith(_avielStickerPrefix);
+          if (directMedia) {
+            _finishMediaExpressionSelection(controller);
+          }
+          await selection;
+          if (!directMedia &&
+              ChatDesignStore
+                      .shared.value.values['closePickerAfterSelection'] ==
+                  true) close();
+        },
         onClose: close,
       ),
     );
@@ -34067,14 +34352,14 @@ class _RemoteExpressionGrid extends StatelessWidget {
                 inlineEmojiIdFromUrl(rawUrl),
                 Image.network(
                   url,
-                  width: inlineEmoji ? 24 * inlineEmojiScale : null,
-                  height: inlineEmoji ? 24 * inlineEmojiScale : null,
+                  width: inlineEmoji ? 24 * inlineCustomEmojiScale : null,
+                  height: inlineEmoji ? 24 * inlineCustomEmojiScale : null,
                   fit: BoxFit.contain,
                   filterQuality: FilterQuality.medium,
                   errorBuilder: (_, __, ___) => Icon(
                     Icons.broken_image_outlined,
                     color: kSubtext,
-                    size: inlineEmoji ? 24 * inlineEmojiScale : 24,
+                    size: inlineEmoji ? 24 * inlineCustomEmojiScale : 24,
                   ),
                 ),
               );
@@ -34597,7 +34882,10 @@ class GroupChatScreen extends StatefulWidget {
   State<GroupChatScreen> createState() => _GroupChatScreenState();
 }
 
-class _GroupChatScreenState extends State<GroupChatScreen> {
+class _GroupChatScreenState extends State<GroupChatScreen>
+    with RemoteChatDesignState<GroupChatScreen> {
+  @override
+  String get chatDesignApi => kApi;
   final _attachmentAnchorKey = GlobalKey();
   bool _attachmentMenuOpen = false;
   bool _attachmentPickerOpen = false;
@@ -34611,6 +34899,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       InlineEmojiController(isolateEmojiRuns: true, textFormatting: true);
   final _msgHistory = _MessageInputHistory();
   final _msgFocusNode = FocusNode();
+  int _composerSendPresses = 0;
+  void _sendFromComposer() {
+    _composerSendPresses++;
+    _send();
+  }
+
   final _expressionPanel = _ExpressionPanelController();
   final _keyboardClick = KeyboardClickSound();
   void _refreshExpressionPanel() {
@@ -34851,6 +35145,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   @override
   void initState() {
     super.initState();
+    widget.socket?.on('chat:design-updated', onRemoteChatDesignChanged);
     _expressionPanel.addListener(_refreshExpressionPanel);
     _scrollCtrl.openSearchMessage(
         widget.searchMessageId, widget.searchMessageAt);
@@ -36162,6 +36457,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       if (map['forward_allowed'] == true) 'forwardAllowed': true,
       if (map['image_classification'] != null)
         'classification': map['image_classification'],
+      'fileSize': uploadMetadataNumber(map['file_size']),
+      'mediaDurationSeconds':
+          uploadMetadataNumber(map['media_duration_seconds']),
       if (map['audio_duration_seconds'] != null)
         'audioDurationSeconds':
             double.tryParse(map['audio_duration_seconds'].toString()),
@@ -36412,14 +36710,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _serverMessagesFingerprint = null;
         _loadMessages(silent: true);
       }
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(
-            _isScanStopped(data)
-                ? _scanStoppedNotice(data)
-                : data['reason']?.toString() ??
-                    'הסריקה בוטלה אוטומטית לאחר המתנה ממושכת',
-            textDirection: TextDirection.rtl),
-      ));
+      showTransientChatNotice(
+          context,
+          _isScanStopped(data)
+              ? _scanStoppedNotice(data)
+              : data['reason']?.toString() ??
+                  'הסריקה בוטלה אוטומטית לאחר המתנה ממושכת');
     };
     widget.socket?.on('scan:cancelled', _scanCancelledSocketHandler);
     _educationUpdatedSocketHandler = (data) {
@@ -36450,12 +36746,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   .contains(message['status'])));
         }
       }
-      ScaffoldMessenger.of(context)
-          .showSnackBar(_contentWarningSnackBar(_isVideoModeration(data)
+      _showContentWarning(
+          context,
+          _isVideoModeration(data)
               ? blockedVideoMessage
               : _isSenderFilterRejection(data)
                   ? _senderFilterRejectionMessage(data)
-                  : data['reason']?.toString() ?? 'ההודעה נחסמה'));
+                  : data['reason']?.toString() ?? 'ההודעה נחסמה');
     };
     widget.socket?.on('message:rejected', _messageRejectedSocketHandler);
 
@@ -36536,6 +36833,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   @override
   void dispose() {
+    widget.socket?.off('chat:design-updated', onRemoteChatDesignChanged);
     _uploadNoticesSubscription.cancel();
     _cleanupSubscription.cancel();
     _receivingFilterSubscription.cancel();
@@ -36696,6 +36994,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       _scrollCtrl.scrollToLatest(force: force);
 
   Future<void> _send({String? stickerId}) async {
+    if (ChatDesignStore.shared.value.flag('dismissKeyboardOnSend'))
+      _msgFocusNode.unfocus();
     final sticker = _avielStickerById(stickerId);
     final text = sticker?.id ??
         encodeInlineEmojiText(normalizeOutgoingMessageText(_msgCtrl.text));
@@ -36958,6 +37258,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       return;
     }
     final destination = _uploadDestination;
+    final sendPresses = _composerSendPresses;
     final accountId = widget.me?['id'];
     bool currentDestination() =>
         mounted &&
@@ -37063,6 +37364,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         );
         if (result == null || result.files.isEmpty) return;
         final file = result.files.single;
+        _finishMediaExpressionSelection(_expressionPanel);
         await _uploadGroupFile(file.xFile, file.name, 'image');
         return;
       }
@@ -37076,6 +37378,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         );
         if (result == null || result.files.isEmpty) return;
         final file = result.files.single;
+        _finishMediaExpressionSelection(_expressionPanel);
         await _uploadGroupFile(
           file.xFile,
           file.name,
@@ -37097,6 +37400,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           imageQuality: 90,
         );
         if (picked != null) {
+          _finishMediaExpressionSelection(_expressionPanel);
           await _uploadGroupFile(picked, 'sticker_${picked.name}', 'image');
         }
         return;
@@ -37137,7 +37441,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       beforePicker = _msgCtrl.value;
     }
 
-    _msgFocusNode.unfocus();
+    if (ChatDesignStore.shared.value.flag('dismissKeyboardOnPicker'))
+      _msgFocusNode.unfocus();
     await _showExpressionPicker(
       context,
       widget.token,
@@ -37163,7 +37468,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
     if (currentDestination()) {
       _restoreExpressionSelection(_msgCtrl, beforePicker);
-      _msgFocusNode.requestFocus();
+      if (_composerSendPresses == sendPresses &&
+          _expressionPanel.restoreFocus &&
+          ChatDesignStore.shared.value.flag('restoreKeyboardAfterPicker')) {
+        _msgFocusNode.requestFocus();
+      }
     }
   }
 
@@ -37624,6 +37933,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final destination = _uploadDestination;
     try {
       final image = parseKeyboardInsertedImage(content);
+      _finishMediaExpressionSelection(_expressionPanel);
       if (!await _prepareGroupUpload('image') || !mounted) return;
       await _uploadGroupFile(
         XFile.fromData(image.bytes,
@@ -37678,6 +37988,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final uploadMessageId = _newUploadMessageId('uploading_group_');
     batchOrder?.uploadIds.add(uploadMessageId);
     final uploadStartedAt = DateTime.now();
+    final uploadFileSize = await (file is XFile
+        ? file.length()
+        : Future<int>.value((file as PlatformFile).size));
     if (showInlineProgress && mounted) {
       setState(() {
         _messages.add({
@@ -37692,6 +38005,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           'isFile': true,
           'fileType': fileType,
           'fileName': fileName,
+          'fileSize': uploadFileSize,
           'uploadStartedAt': uploadStartedAt.toIso8601String(),
         });
       });
@@ -37775,10 +38089,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           _serverMessagesFingerprint = null;
           _loadMessages(silent: true);
         }
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content:
-                Text(result.error ?? 'הקובץ לא התקבל בשרת. אפשר לנסות שוב'),
-            backgroundColor: Colors.red));
+        showTransientChatNotice(
+            context, result.error ?? 'הקובץ לא התקבל בשרת. אפשר לנסות שוב',
+            backgroundColor: Colors.red);
         return;
       case _FileUploadOutcome.rejected:
         setState(() {
@@ -37799,6 +38112,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             _messages.add({
               'id': _newUploadMessageId('temp_group_file_'),
               'clientUploadId': data['clientUploadId'],
+              'fileSize': uploadMetadataNumber(data['fileSize']),
+              'mediaDurationSeconds':
+                  uploadMetadataNumber(data['mediaDurationSeconds']),
               'text': fileName,
               'senderName': widget.me?['name'] as String? ?? '',
               'time': _nowTime(),
@@ -37842,6 +38158,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             _messages.add({
               'id': _newUploadMessageId('temp_group_file_'),
               'clientUploadId': data['clientUploadId'],
+              'fileSize': uploadMetadataNumber(data['fileSize']),
+              'mediaDurationSeconds':
+                  uploadMetadataNumber(data['mediaDurationSeconds']),
               'text': fileName,
               'senderName': widget.me?['name'] as String? ?? '',
               'time': _nowTime(),
@@ -37858,12 +38177,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         });
         _scrollToBottom();
         if (showNotice) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text(
-                'הקובץ בהמתנה לסריקה — יישלח לקבוצה אוטומטית לאחר אישור',
-                textDirection: TextDirection.rtl),
-            backgroundColor: Colors.orange,
-          ));
+          showTransientChatNotice(
+              context, 'הקובץ בהמתנה לסריקה — יישלח לקבוצה אוטומטית לאחר אישור',
+              backgroundColor: Colors.orange);
         }
         return;
       case _FileUploadOutcome.scanBot:
@@ -37922,6 +38238,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             _messages.add({
               'id': messageId,
               'clientUploadId': data['clientUploadId'],
+              'fileSize': uploadMetadataNumber(data['fileSize']),
+              'mediaDurationSeconds':
+                  uploadMetadataNumber(data['mediaDurationSeconds']),
               'text': fileName,
               'senderName': widget.me?['name'] as String? ?? '',
               'time': sendData['createdAt'] != null
@@ -38004,7 +38323,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 child: ElevatedButton(
                   onPressed: () => Navigator.pop(dialogContext),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: kPrimary,
+                    backgroundColor: ChatDesignStore.shared.value
+                        .color('accentColor', kPrimary),
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12)),
@@ -38786,9 +39106,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     await _loadGroupReceivingFilter();
     if (!mounted) return;
     if (_groupReceivingFilter == null || _outgoingFilter == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('לא ניתן לטעון כעת את נתוני הסינון')),
-      );
+      showTransientChatNotice(context, 'לא ניתן לטעון כעת את נתוני הסינון');
       return;
     }
     var groupDraft = Map<String, bool>.from(_groupReceivingFilter!);
@@ -39059,13 +39377,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => applyChatDesign(context, _buildChat);
+
+  Widget _buildChat(BuildContext context) {
     final inviterName =
         widget.group['invited_by_name']?.toString().trim() ?? '';
     final groupDescription =
         widget.group['description']?.toString().trim() ?? '';
     final chat = Scaffold(
-      backgroundColor: kChatBg,
+      backgroundColor:
+          ChatDesignStore.shared.value.color('chatBackground', kChatBg),
       appBar: (_expressionPanel.isOpen ||
                   MediaQuery.sizeOf(context).height -
                           MediaQuery.viewInsetsOf(context).bottom <
@@ -39076,7 +39397,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   250
           ? null
           : AppBar(
-              backgroundColor: kPrimary,
+              backgroundColor:
+                  ChatDesignStore.shared.value.color('accentColor', kPrimary),
               leading: _selectedMessageKeys.isNotEmpty
                   ? IconButton(
                       tooltip: 'ביטול הבחירה',
@@ -39755,6 +40077,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                               : uploadFileType == 'audio'
                                                                                   ? 'הקלטה'
                                                                                   : 'תמונה'),
+                                                                      fileSize:
+                                                                          uploadMetadataNumber(
+                                                                              msg['fileSize']),
+                                                                      durationSeconds:
+                                                                          uploadMetadataNumber(
+                                                                              msg['mediaDurationSeconds']),
                                                                       fileType:
                                                                           uploadFileType ??
                                                                               'image',
@@ -39907,10 +40235,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                           .isNotEmpty,
                                                                   child:
                                                                       Container(
-                                                                    margin: const EdgeInsets
-                                                                        .only(
-                                                                        bottom:
-                                                                            6),
+                                                                    margin: EdgeInsets.only(
+                                                                        bottom: ChatDesignStore
+                                                                            .shared
+                                                                            .value
+                                                                            .number('messageGap',
+                                                                                4)),
                                                                     padding: isEducationAnnouncement ||
                                                                             msg['isFile'] ==
                                                                                 true ||
@@ -39918,19 +40248,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                                 null
                                                                         ? EdgeInsets
                                                                             .zero
-                                                                        : const EdgeInsets
-                                                                            .symmetric(
-                                                                            horizontal:
-                                                                                8,
-                                                                            vertical:
-                                                                                5),
+                                                                        : ChatDesignStore
+                                                                            .shared
+                                                                            .value
+                                                                            .bubblePadding,
                                                                     constraints:
                                                                         BoxConstraints(
                                                                       maxWidth: isEducationAnnouncement
                                                                           ? math.min(380, MediaQuery.sizeOf(context).width * .86)
                                                                           : msg['fileUrl'] != null
                                                                               ? math.min(330, MediaQuery.sizeOf(context).width * .86)
-                                                                              : MediaQuery.sizeOf(context).width * (isSafeAnswer ? .96 : .75),
+                                                                              : MediaQuery.sizeOf(context).width * (isSafeAnswer ? .96 : ChatDesignStore.shared.value.number('groupBubbleWidth', .75)),
                                                                     ),
                                                                     decoration: isEducationAnnouncement
                                                                         ? BoxDecoration(
@@ -39943,7 +40271,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                         : msg['isFile'] == true || avielSticker != null
                                                                             ? null
                                                                             : BoxDecoration(
-                                                                                color: isSafeAnswer ? Colors.white : kIncoming,
+                                                                                color: isSafeAnswer ? Colors.white : ChatDesignStore.shared.value.color(isMe ? 'outgoingBubble' : 'incomingBubble', kIncoming),
                                                                                 borderRadius: BorderRadius.circular(6),
                                                                                 border: _selectedMessageKeys.contains(_selectionKey(msg)) ? Border.all(color: kPrimary, width: 3) : null,
                                                                                 boxShadow: [
@@ -39965,7 +40293,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                           CrossAxisAlignment
                                                                               .start,
                                                                       children: [
-                                                                        if (msg['isFile'] ==
+                                                                        if (ChatDesignStore.shared.value.flag('showFileNames') &&
+                                                                            uploadStatus !=
+                                                                                'uploading' &&
+                                                                            uploadStatus !=
+                                                                                'pending_scan' &&
+                                                                            msg['isFile'] ==
                                                                                 true &&
                                                                             msg['fileUrl'] !=
                                                                                 null)
@@ -40015,7 +40348,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                               crossAxisAlignment: CrossAxisAlignment.end,
                                                                               children: [
                                                                                 VoiceMessagePlayer(showFileName: false, token: widget.token, fileName: msg['fileName']?.toString(), url: msg['fileUrl'] as String, isMe: isMe, senderAvatarUrl: _voiceMessageSender(msg, isMe)?['profile_pic_url']?.toString(), senderName: _voiceMessageSender(msg, isMe)?['name']?.toString() ?? msg['senderName']?.toString() ?? '', initialDurationSeconds: (msg['audioDurationSeconds'] as num?)?.toDouble()),
-                                                                                _AudioScanBadge(),
                                                                               ])
                                                                         else if (msg['fileUrl'] !=
                                                                                 null &&
@@ -40247,6 +40579,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                               messageText: groupText),
                                                                         ],
                                                                         if (isMe &&
+                                                                            ChatDesignStore.shared.value.flag(
+                                                                                'showGroupDeliverySummary') &&
+                                                                            const [
+                                                                              'image',
+                                                                              'video',
+                                                                              'document'
+                                                                            ].contains(
+                                                                                uploadFileType) &&
                                                                             msg['deliverySummary']
                                                                                 is Map)
                                                                           _GroupDeliverySummary(
@@ -40330,14 +40670,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         ],
                       ),
                     ),
-                  if (_myStatus == 'member')
+                  if (_myStatus == 'member' &&
+                      _isTyping &&
+                      ChatDesignStore.shared.value.flag('showTypingIndicator'))
                     Container(
                       key: const ValueKey('group-typing-indicator'),
                       width: double.infinity,
                       color: kBg,
                       padding: const EdgeInsets.symmetric(
                           horizontal: 16, vertical: 4),
-                      child: Text(_isTyping ? '$_typingName מקליד...' : ' ',
+                      child: Text('$_typingName מקליד...',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -40364,7 +40706,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     Container(
                       color: kCard,
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 6),
+                          horizontal: 8, vertical: 4),
                       child: Align(
                         alignment: Alignment.centerRight,
                         child: ConstrainedBox(
@@ -40377,7 +40719,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                   onSend: _toggleVoiceRecording,
                                   onCancel: _cancelVoiceRecording)
                               : _ChatComposerBar(
-                                  compact: constraints.maxHeight < 180,
+                                  compact: constraints.maxHeight < 260,
                                   controller: _msgCtrl,
                                   focusNode: _msgFocusNode,
                                   input: Focus(
@@ -40391,10 +40733,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                       builder: (context, value, _) => TextField(
                                         controller: _msgCtrl,
                                         focusNode: _msgFocusNode,
+                                        onTapOutside:
+                                            ChatDesignStore.shared.value.flag(
+                                                    'dismissComposerOnOutsideTap')
+                                                ? (_) => _msgFocusNode.unfocus()
+                                                : null,
                                         contentInsertionConfiguration:
                                             !kIsWeb &&
                                                     defaultTargetPlatform ==
-                                                        TargetPlatform.android &&
+                                                        TargetPlatform
+                                                            .android &&
                                                     _groupAllowsImages
                                                 ? ContentInsertionConfiguration(
                                                     allowedMimeTypes:
@@ -40421,18 +40769,25 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                         decoration: InputDecoration(
                                           hintText: 'הודעה לקבוצה...',
                                           hintTextDirection: TextDirection.rtl,
-                                          contentPadding:
-                                              const EdgeInsets.symmetric(
-                                                  horizontal: 16, vertical: 10),
-                                          border: OutlineInputBorder(
-                                            borderRadius:
-                                                BorderRadius.circular(24),
-                                            borderSide: BorderSide.none,
-                                          ),
-                                          filled: true,
-                                          fillColor: kBg,
+                                          contentPadding: EdgeInsets.symmetric(
+                                              horizontal: 4,
+                                              vertical: ChatDesignStore
+                                                  .shared.value
+                                                  .number(
+                                                      'composerVerticalPadding',
+                                                      8)),
+                                          border: InputBorder.none,
+                                          isDense: true,
                                         ),
-                                        onTap: _expressionPanel.close,
+                                        style: TextStyle(
+                                            fontSize: ChatDesignStore
+                                                .shared.value
+                                                .number('composerFontSize', 13),
+                                            color: kTextDark),
+                                        onTap: ChatDesignStore.shared.value
+                                                .flag('closePickerOnOutsideTap')
+                                            ? _expressionPanel.close
+                                            : null,
                                         onChanged: (_) {
                                           _keyboardClick.click();
                                           widget.socket?.emit('group:typing',
@@ -40445,7 +40800,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                   attachmentKey: _attachmentAnchorKey,
                                   onAttach: _showAttachMenu,
                                   onRecord: _toggleVoiceRecording,
-                                  onSend: _send,
+                                  onSend: _sendFromComposer,
                                   onStickers: () =>
                                       _showGroupExpressions(inlineEmoji: false),
                                   onEmoji: () =>
@@ -40462,7 +40817,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         math.min(
                             constraints.maxHeight * 0.6,
                             constraints.maxHeight -
-                                (constraints.maxHeight < 180 ? 116 : 124))),
+                                (constraints.maxHeight < 180 ? 116 : 140))),
                   ),
                 ],
               )),
@@ -45461,6 +45816,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Scaffold(
       backgroundColor: kBg,
       appBar: AppBar(
+        backgroundColor: Colors.white,
+        foregroundColor: const Color(0xFF263747),
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        actions: [
+          IconButton(
+              tooltip: 'סגור הגדרות',
+              onPressed: widget.onBack,
+              icon: const Icon(Icons.close))
+        ],
         leading: IconButton(
           tooltip: 'חזרה',
           onPressed: widget.onBack,
@@ -45473,44 +45838,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const Text('הגדרות',
                 style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
             if (name.isNotEmpty)
-              Text(name,
-                  style: const TextStyle(fontSize: 11, color: Colors.white70)),
+              Text(name, style: const TextStyle(fontSize: 11, color: kSubtext)),
           ],
         ),
       ),
       body: Align(
-        alignment: Alignment.topRight,
+        alignment: Alignment.topCenter,
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 410),
+          constraints: const BoxConstraints(maxWidth: 640),
           child: Material(
             color: kBg,
             child: ListView(
               children: [
-                // Modesty settings
-                const _SectionHeader(title: 'הגדרות תוכן לא ראוי'),
-                Material(
-                  color: kCard,
-                  child: Column(
-                    children: [
-                      ListTile(
-                        leading: const Icon(Icons.tune, color: kPrimary),
-                        title: const Text('סוגי תוכן מותרים'),
-                        subtitle: const Text(
-                            'טקסט, תמונות, גברים, נשים, ילדים ווידאו'),
-                        trailing: const Icon(Icons.chevron_left),
-                        onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => ContentFilterSettingsScreen(
-                                token: widget.token,
-                              ),
-                            )),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 8),
-
                 // Profile header
                 InkWell(
                   onTap: () async {
@@ -45523,7 +45862,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     if (changed == true) await widget.onProfileChanged();
                   },
                   child: Container(
-                    color: kCard,
+                    decoration: BoxDecoration(
+                        color: kCard, borderRadius: BorderRadius.circular(18)),
+                    margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
                     padding: const EdgeInsets.all(20),
                     child: Row(
                       children: [
@@ -45554,13 +45895,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 8),
 
-                const _SectionHeader(title: 'אחסון וגיבוי אישי'),
-                Material(
-                  color: kCard,
+                // Modesty settings
+                const SettingsSectionHeading(title: 'הגדרות תוכן לא ראוי'),
+                SettingsPanel(
+                  child: Column(
+                    children: [
+                      ListTile(
+                        leading: const SettingsCategoryIcon(Icons.tune,
+                            color: Color(0xFF21BDD2)),
+                        title: const Text('סוגי תוכן מותרים'),
+                        subtitle: const Text(
+                            'טקסט, תמונות, גברים, נשים, ילדים ווידאו'),
+                        trailing: const Icon(Icons.chevron_left),
+                        onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => ContentFilterSettingsScreen(
+                                token: widget.token,
+                              ),
+                            )),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+
+                const SettingsSectionHeading(title: 'אחסון וגיבוי אישי'),
+                SettingsPanel(
                   child: Column(children: [
                     ListTile(
-                      leading: const Icon(Icons.perm_media_outlined,
-                          color: kPrimary),
+                      leading: const SettingsCategoryIcon(
+                          Icons.perm_media_outlined,
+                          color: Color(0xFF577DF2)),
                       title: const Text('המדיה שלי'),
                       subtitle: Text(
                         '$_storedFileCount קבצים • ${_formatStorage(_storedBytes)}\n'
@@ -45584,11 +45950,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       )
                     else ...[
                       ListTile(
-                        leading: Icon(
+                        leading: SettingsCategoryIcon(
                           _driveConnected
                               ? Icons.cloud_done_outlined
                               : Icons.add_to_drive_outlined,
-                          color: _driveConnected ? Colors.green : kPrimary,
+                          color: const Color(0xFF34B67A),
                         ),
                         title: Text(_driveConnected
                             ? 'Google Drive מחובר'
@@ -45632,8 +45998,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       if (_driveConnected) ...[
                         const Divider(height: 1, indent: 16),
                         SwitchListTile(
-                          secondary: const Icon(Icons.sync_lock_outlined,
-                              color: kPrimary),
+                          secondary: const SettingsCategoryIcon(
+                              Icons.sync_lock_outlined,
+                              color: Color(0xFF34B67A)),
                           title: const Text('גיבוי אוטומטי ברקע'),
                           subtitle: Text(_automaticBackup
                               ? 'פעיל • קבצים מפונים מהשרת לאחר גיבוי ואימות ונפתחים מהענן • $_verifiedBackupFiles מתוך $_approvedFileCount גובו ואומתו'
@@ -45658,13 +46025,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
 
                 // Notifications
-                const _SectionHeader(title: 'התראות'),
-                Material(
-                  color: kCard,
+                const SettingsSectionHeading(title: 'התראות'),
+                SettingsPanel(
                   child: Column(
                     children: [
                       SwitchListTile(
                         activeThumbColor: kPrimary,
+                        secondary: const SettingsCategoryIcon(
+                            Icons.notifications_outlined,
+                            color: Color(0xFFAC69DA)),
                         title: const Text('התראות Push'),
                         value: _notifications,
                         onChanged: _savingPreferences
@@ -45674,6 +46043,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       const Divider(height: 1, indent: 16),
                       SwitchListTile(
                         activeThumbColor: kPrimary,
+                        secondary: const SettingsCategoryIcon(Icons.done_all,
+                            color: Color(0xFF577DF2)),
                         title: const Text('אישורי קריאה'),
                         subtitle: const Text('שלח אישור כשנקראת הודעה'),
                         value: _readReceipts,
@@ -45687,14 +46058,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
 
                 // Privacy
-                const _SectionHeader(title: 'פרטיות'),
-                Material(
-                  color: kCard,
+                const SettingsSectionHeading(title: 'פרטיות'),
+                SettingsPanel(
                   child: Column(
                     children: [
                       ListTile(
-                        leading: const Icon(Icons.contact_phone_outlined,
-                            color: kSubtext),
+                        leading: const SettingsCategoryIcon(
+                            Icons.contact_phone_outlined,
+                            color: Color(0xFF19BBD9)),
                         title: const Text('שיתוף מספר הטלפון'),
                         subtitle: const Text('בקשות והרשאות שנתתי לחברים'),
                         trailing:
@@ -45707,7 +46078,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       const Divider(height: 1, indent: 16),
                       ListTile(
-                        leading: const Icon(Icons.block, color: kSubtext),
+                        leading: const SettingsCategoryIcon(Icons.block,
+                            color: Color(0xFFEB6B74)),
                         title: const Text('משתמשים חסומים'),
                         trailing:
                             const Icon(Icons.chevron_left, color: kSubtext),
@@ -45719,8 +46091,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       const Divider(height: 1, indent: 16),
                       ListTile(
-                        leading:
-                            const Icon(Icons.lock_outline, color: kSubtext),
+                        leading: const SettingsCategoryIcon(Icons.lock_outline,
+                            color: Color(0xFF8F70DD)),
                         title: const Text('מדיניות פרטיות'),
                         trailing:
                             const Icon(Icons.chevron_left, color: kSubtext),
@@ -45729,8 +46101,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       const Divider(height: 1, indent: 16),
                       ListTile(
-                        leading: const Icon(Icons.location_on_outlined,
-                            color: kPrimary),
+                        leading: const SettingsCategoryIcon(
+                            Icons.location_on_outlined,
+                            color: Color(0xFFFFA33A)),
                         title: const Text('שיתוף מיקום'),
                         subtitle:
                             const Text('כבוי כברירת מחדל; נדרש אישור מפורש'),
@@ -45740,8 +46113,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       const GeocodingAttribution(),
                       ListTile(
-                        leading: const Icon(Icons.location_off_outlined,
-                            color: kSubtext),
+                        leading: const SettingsCategoryIcon(
+                            Icons.location_off_outlined,
+                            color: Color(0xFF7A8C9E)),
                         title: const Text('מחיקת מיקום שמור'),
                         onTap: _clearLocation,
                       ),
@@ -45751,28 +46125,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
 
                 // About
-                const _SectionHeader(title: 'אודות'),
-                Material(
-                  color: kCard,
+                const SettingsSectionHeading(title: 'אודות'),
+                SettingsPanel(
                   child: Column(
                     children: [
                       const ListTile(
-                        leading: Icon(Icons.info_outline, color: kSubtext),
+                        leading: const SettingsCategoryIcon(Icons.info_outline,
+                            color: Color(0xFF21BDD2)),
                         title: Text('גרסה'),
                         trailing:
                             Text(kVersion, style: TextStyle(color: kSubtext)),
                       ),
                       const Divider(height: 1, indent: 16),
                       const ListTile(
-                        leading: Icon(Icons.verified_outlined, color: kAccent),
+                        leading: const SettingsCategoryIcon(
+                            Icons.verified_outlined,
+                            color: Color(0xFF34B67A)),
                         title: Text('בתשובה Messenger'),
                         subtitle: Text('מסרים לקהילה הישראלית'),
                       ),
                       const GeocodingAttribution(),
                       const Divider(height: 1, indent: 16),
                       ListTile(
-                        leading: const Icon(Icons.description_outlined,
-                            color: kSubtext),
+                        leading: const SettingsCategoryIcon(
+                            Icons.description_outlined,
+                            color: Color(0xFF577DF2)),
                         title: const Text('רישיונות קוד פתוח'),
                         subtitle: const Text('Flutter וספריות צד שלישי'),
                         trailing:
@@ -45794,12 +46171,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 8),
 
-                const _SectionHeader(title: 'סיוע ומעקב'),
-                Material(
-                  color: kCard,
+                const SettingsSectionHeading(title: 'סיוע ומעקב'),
+                SettingsPanel(
                   child: ListTile(
-                    leading: const Icon(Icons.pending_actions_outlined,
-                        color: kPrimary),
+                    leading: const SettingsCategoryIcon(
+                        Icons.pending_actions_outlined,
+                        color: Color(0xFFFFA33A)),
                     title: const Text('הפניות שלי'),
                     subtitle: const Text('דיווחי תקלות, הצעות ועדכונים מהמפתח'),
                     trailing: const Icon(Icons.chevron_left, color: kSubtext),
@@ -45815,12 +46192,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                 // System administration is available only in the browser.
                 if (kIsWeb && widget.adminPerm != null) ...[
-                  const _SectionHeader(title: 'ניהול'),
-                  Material(
-                    color: kCard,
+                  const SettingsSectionHeading(title: 'ניהול'),
+                  SettingsPanel(
                     child: ListTile(
-                      leading: const Icon(Icons.admin_panel_settings,
-                          color: kPrimary),
+                      leading: const SettingsCategoryIcon(
+                          Icons.admin_panel_settings,
+                          color: Color(0xFF8F70DD)),
                       title: const Text('לוח ניהול'),
                       subtitle: Text(
                           widget.adminPerm == 'edit'
@@ -49059,7 +49436,10 @@ class CreateEducationFormScreen extends StatefulWidget {
       _CreateEducationFormScreenState();
 }
 
-class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
+class _CreateEducationFormScreenState extends State<CreateEducationFormScreen>
+    with RemoteChatDesignState<CreateEducationFormScreen> {
+  @override
+  String get chatDesignApi => kApi;
   final _title = TextEditingController();
   final _description = TextEditingController();
   final _fileLabel = TextEditingController();
@@ -49949,6 +50329,9 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
 
   @override
   Widget build(BuildContext context) =>
+      applyChatDesign(context, _buildDesignScreen);
+
+  Widget _buildDesignScreen(BuildContext context) =>
       _type == 'survey' ? _buildSurvey() : _buildDocumentForm();
 }
 
@@ -49968,8 +50351,10 @@ class EducationFormDetailsScreen extends StatefulWidget {
       _EducationFormDetailsScreenState();
 }
 
-class _EducationFormDetailsScreenState
-    extends State<EducationFormDetailsScreen> {
+class _EducationFormDetailsScreenState extends State<EducationFormDetailsScreen>
+    with RemoteChatDesignState<EducationFormDetailsScreen> {
+  @override
+  String get chatDesignApi => kApi;
   bool _loading = true,
       _saving = false,
       _exportingPdf = false,
@@ -50806,7 +51191,12 @@ class _EducationFormDetailsScreenState
                 for (final option in options)
                   if (multiple)
                     CheckboxListTile(
-                      dense: true,
+                      dense: ChatDesignStore.shared.value.flag('compactPolls'),
+                      visualDensity: VisualDensity(
+                          vertical:
+                              ChatDesignStore.shared.value.flag('compactPolls')
+                                  ? -2
+                                  : 0),
                       value: selected.contains(option),
                       title: Text(option),
                       onChanged: _saving
@@ -50832,7 +51222,12 @@ class _EducationFormDetailsScreenState
                     )
                   else
                     RadioListTile<String>(
-                      dense: true,
+                      dense: ChatDesignStore.shared.value.flag('compactPolls'),
+                      visualDensity: VisualDensity(
+                          vertical:
+                              ChatDesignStore.shared.value.flag('compactPolls')
+                                  ? -2
+                                  : 0),
                       value: option,
                       title: Text(option),
                       enabled: !_saving,
@@ -50841,8 +51236,14 @@ class _EducationFormDetailsScreenState
             );
             return Card(
               key: ValueKey('survey-response-question-${entry.key}'),
+              margin: EdgeInsets.only(
+                  bottom: ChatDesignStore.shared.value
+                      .number('pollOptionSpacing', 4)),
               child: Padding(
-                padding: const EdgeInsets.all(14),
+                padding: EdgeInsets.all(
+                    ChatDesignStore.shared.value.flag('compactPolls')
+                        ? 12
+                        : 20),
                 child: multiple
                     ? choices
                     : RadioGroup<String>(
@@ -51177,7 +51578,8 @@ class _EducationFormDetailsScreenState
         return Card(
           key: ValueKey('survey-result-question-${entry.key}'),
           child: Padding(
-            padding: const EdgeInsets.all(14),
+            padding: EdgeInsets.all(
+                ChatDesignStore.shared.value.flag('compactPolls') ? 12 : 20),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -51216,7 +51618,10 @@ class _EducationFormDetailsScreenState
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      applyChatDesign(context, _buildDesignScreen);
+
+  Widget _buildDesignScreen(BuildContext context) {
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
@@ -51273,7 +51678,8 @@ class _EducationFormDetailsScreenState
       body: RefreshIndicator(
         onRefresh: _load,
         child: ListView(
-          padding: const EdgeInsets.all(14),
+          padding: EdgeInsets.all(
+              ChatDesignStore.shared.value.flag('compactPolls') ? 12 : 20),
           children: [
             Card(
               child: Padding(

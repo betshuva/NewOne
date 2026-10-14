@@ -1,3 +1,4 @@
+import 'chat_design_settings.dart';
 import 'package:flutter/material.dart';
 
 /// Keeps the opening unread boundary stable after read receipts are refreshed.
@@ -53,11 +54,23 @@ class ChatHistoryController extends ScrollController {
 
   void scrollToLatest({bool force = false}) {
     if (!hasClients) return;
-    if (!force && position.maxScrollExtent - position.pixels > 80) return;
+    final design = ChatDesignStore.shared.value;
+    final mode = design.choice('autoScrollMode', 'nearBottom');
+    if (!force && mode == 'manual') return;
+    if (!force &&
+        mode == 'nearBottom' &&
+        position.maxScrollExtent - position.pixels >
+            design.number('autoScrollDistance', 80)) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (hasClients) {
-        animateTo(position.maxScrollExtent,
-            duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+        final duration = design.number('autoScrollDurationMs', 300).round();
+        if (duration == 0) {
+          jumpTo(position.maxScrollExtent);
+        } else {
+          animateTo(position.maxScrollExtent,
+              duration: Duration(milliseconds: duration),
+              curve: Curves.easeOut);
+        }
       }
     });
   }

@@ -325,6 +325,326 @@
       "id": 49,
       "file": "sticker-49.png",
       "label": "שבת שלום"
+    },
+    {
+      "id": 167,
+      "file": "cream-contrast-happy.png",
+      "label": "שמחה — קרם"
+    },
+    {
+      "id": 168,
+      "file": "cream-contrast-laugh.png",
+      "label": "צחוק — קרם"
+    },
+    {
+      "id": 169,
+      "file": "cream-contrast-smile.png",
+      "label": "חיוך — קרם"
+    },
+    {
+      "id": 170,
+      "file": "cream-contrast-wink.png",
+      "label": "קריצה — קרם"
+    },
+    {
+      "id": 171,
+      "file": "cream-contrast-kiss.png",
+      "label": "נשיקה — קרם"
+    },
+    {
+      "id": 172,
+      "file": "cream-contrast-serenity.png",
+      "label": "שלווה — קרם"
+    },
+    {
+      "id": 173,
+      "file": "cream-contrast-love.png",
+      "label": "אהבה — קרם"
+    },
+    {
+      "id": 174,
+      "file": "cream-contrast-excitement.png",
+      "label": "התרגשות — קרם"
+    },
+    {
+      "id": 175,
+      "file": "cream-contrast-sparkling-eyes.png",
+      "label": "עיניים נוצצות — קרם"
+    },
+    {
+      "id": 176,
+      "file": "cream-contrast-surprise.png",
+      "label": "הפתעה — קרם"
+    },
+    {
+      "id": 177,
+      "file": "cream-contrast-doubt.png",
+      "label": "ספק — קרם"
+    },
+    {
+      "id": 178,
+      "file": "cream-contrast-thinking.png",
+      "label": "מחשבה — קרם"
+    },
+    {
+      "id": 179,
+      "file": "cream-contrast-calm.png",
+      "label": "רוגע — קרם"
+    },
+    {
+      "id": 180,
+      "file": "cream-contrast-worry.png",
+      "label": "דאגה — קרם"
+    },
+    {
+      "id": 181,
+      "file": "cream-contrast-crying.png",
+      "label": "בכי — קרם"
+    },
+    {
+      "id": 182,
+      "file": "cream-contrast-frustration.png",
+      "label": "תסכול — קרם"
+    },
+    {
+      "id": 183,
+      "file": "cream-mint-happy.png",
+      "label": "שמחה — ירוק בהיר"
+    },
+    {
+      "id": 184,
+      "file": "cream-mint-laugh.png",
+      "label": "צחוק — ירוק בהיר"
+    },
+    {
+      "id": 185,
+      "file": "cream-mint-smile.png",
+      "label": "חיוך — ירוק בהיר"
+    },
+    {
+      "id": 186,
+      "file": "cream-mint-wink.png",
+      "label": "קריצה — ירוק בהיר"
+    },
+    {
+      "id": 187,
+      "file": "cream-mint-kiss.png",
+      "label": "נשיקה — ירוק בהיר"
+    },
+    {
+      "id": 188,
+      "file": "cream-mint-serenity.png",
+      "label": "שלווה — ירוק בהיר"
+    },
+    {
+      "id": 189,
+      "file": "cream-mint-love.png",
+      "label": "אהבה — ירוק בהיר"
+    },
+    {
+      "id": 190,
+      "file": "cream-mint-excitement.png",
+      "label": "התרגשות — ירוק בהיר"
+    },
+    {
+      "id": 191,
+      "file": "cream-mint-sparkling-eyes.png",
+      "label": "עיניים נוצצות — ירוק בהיר"
+    },
+    {
+      "id": 192,
+      "file": "cream-mint-surprise.png",
+      "label": "הפתעה — ירוק בהיר"
+    },
+    {
+      "id": 193,
+      "file": "cream-mint-doubt.png",
+      "label": "ספק — ירוק בהיר"
+    },
+    {
+      "id": 194,
+      "file": "cream-mint-thinking.png",
+      "label": "מחשבה — ירוק בהיר"
+    },
+    {
+      "id": 195,
+      "file": "cream-mint-calm.png",
+      "label": "רוגע — ירוק בהיר"
+    },
+    {
+      "id": 196,
+      "file": "cream-mint-worry.png",
+      "label": "דאגה — ירוק בהיר"
+    },
+    {
+      "id": 197,
+      "file": "cream-mint-crying.png",
+      "label": "בכי — ירוק בהיר"
+    },
+    {
+      "id": 198,
+      "file": "cream-mint-frustration.png",
+      "label": "תסכול — ירוק בהיר"
+    },
+    {
+      "id": 199,
+      "file": "strong-green-happy.png",
+      "label": "שמחה — ירוק חזק"
+    },
+    {
+      "id": 200,
+      "file": "strong-green-laugh.png",
+      "label": "צחוק — ירוק חזק"
+    },
+    {
+      "id": 201,
+      "file": "strong-green-smile.png",
+      "label": "חיוך — ירוק חזק"
+    },
+    {
+      "id": 202,
+      "file": "strong-green-wink.png",
+      "label": "קריצה — ירוק חזק"
+    },
+    {
+      "id": 203,
+      "file": "strong-green-kiss.png",
+      "label": "נשיקה — ירוק חזק"
+    },
+    {
+      "id": 204,
+      "file": "strong-green-serenity.png",
+      "label": "שלווה — ירוק חזק"
+    },
+    {
+      "id": 205,
+      "file": "strong-green-love.png",
+      "label": "אהבה — ירוק חזק"
+    },
+    {
+      "id": 206,
+      "file": "strong-green-excitement.png",
+      "label": "התרגשות — ירוק חזק"
+    },
+    {
+      "id": 207,
+      "file": "strong-green-sparkling-eyes.png",
+      "label": "עיניים נוצצות — ירוק חזק"
+    },
+    {
+      "id": 208,
+      "file": "strong-green-surprise.png",
+      "label": "הפתעה — ירוק חזק"
+    },
+    {
+      "id": 209,
+      "file": "strong-green-doubt.png",
+      "label": "ספק — ירוק חזק"
+    },
+    {
+      "id": 210,
+      "file": "strong-green-thinking.png",
+      "label": "מחשבה — ירוק חזק"
+    },
+    {
+      "id": 211,
+      "file": "strong-green-calm.png",
+      "label": "רוגע — ירוק חזק"
+    },
+    {
+      "id": 212,
+      "file": "strong-green-worry.png",
+      "label": "דאגה — ירוק חזק"
+    },
+    {
+      "id": 213,
+      "file": "strong-green-crying.png",
+      "label": "בכי — ירוק חזק"
+    },
+    {
+      "id": 214,
+      "file": "strong-green-frustration.png",
+      "label": "תסכול — ירוק חזק"
+    },
+    {
+      "id": 215,
+      "file": "strong-red-happy.png",
+      "label": "שמחה — אדום"
+    },
+    {
+      "id": 216,
+      "file": "strong-red-laugh.png",
+      "label": "צחוק — אדום"
+    },
+    {
+      "id": 217,
+      "file": "strong-red-smile.png",
+      "label": "חיוך — אדום"
+    },
+    {
+      "id": 218,
+      "file": "strong-red-wink.png",
+      "label": "קריצה — אדום"
+    },
+    {
+      "id": 219,
+      "file": "strong-red-kiss.png",
+      "label": "נשיקה — אדום"
+    },
+    {
+      "id": 220,
+      "file": "strong-red-serenity.png",
+      "label": "שלווה — אדום"
+    },
+    {
+      "id": 221,
+      "file": "strong-red-love.png",
+      "label": "אהבה — אדום"
+    },
+    {
+      "id": 222,
+      "file": "strong-red-excitement.png",
+      "label": "התרגשות — אדום"
+    },
+    {
+      "id": 223,
+      "file": "strong-red-sparkling-eyes.png",
+      "label": "עיניים נוצצות — אדום"
+    },
+    {
+      "id": 224,
+      "file": "strong-red-surprise.png",
+      "label": "הפתעה — אדום"
+    },
+    {
+      "id": 225,
+      "file": "strong-red-doubt.png",
+      "label": "ספק — אדום"
+    },
+    {
+      "id": 226,
+      "file": "strong-red-thinking.png",
+      "label": "מחשבה — אדום"
+    },
+    {
+      "id": 227,
+      "file": "strong-red-calm.png",
+      "label": "רוגע — אדום"
+    },
+    {
+      "id": 228,
+      "file": "strong-red-worry.png",
+      "label": "דאגה — אדום"
+    },
+    {
+      "id": 229,
+      "file": "strong-red-crying.png",
+      "label": "בכי — אדום"
+    },
+    {
+      "id": 230,
+      "file": "strong-red-frustration.png",
+      "label": "תסכול — אדום"
     }
   ]
 }

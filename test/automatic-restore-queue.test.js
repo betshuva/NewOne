@@ -103,6 +103,12 @@ function harness(records, options = {}) {
       const record = records.find(item => item.row.id === args[0]);
       assert.ok(record, 'queue updates only a selected fixture backup');
       const { row } = record;
+      if (statement.includes("restore_last_error='RESTORE_DOWNLOAD_IN_PROGRESS'")) {
+        row.restore_next_attempt_at = null;
+        row.restore_last_error = 'RESTORE_DOWNLOAD_IN_PROGRESS';
+        updateOrder.push('pending:' + row.id);
+        return { rows: [], rowCount: 1 };
+      }
       if (/restore_attempt_count\s*=\s*restore_attempt_count\s*\+\s*1/.test(statement)) {
         const oldAttempts = row.restore_attempt_count;
         row.restore_attempt_count++;
@@ -179,6 +185,36 @@ function harness(records, options = {}) {
   return { tick, records, pool, selects, downloads, errors, events, releases,
     advance(milliseconds) { now += milliseconds; } };
 }
+
+test('completed download chunks remain pending until a later verified round-trip completes', async () => {
+  const record = backup(0, { storage_tier: 'personal', restore_attempt_count: 2 });
+  let partial = true;
+  const app = harness([record], {
+    async download(item, remoteId) {
+      if (partial && remoteId === item.row.remote_file_id) {
+        throw Object.assign(new Error('Download made checkpoint progress'),
+          { name: 'TimeoutError', code: 'DRIVE_DOWNLOAD_IN_PROGRESS' });
+      }
+    },
+  });
+  assert.deepEqual(await app.tick(), { verified: 0, failed: 0, pending: true });
+  assert.equal(record.row.restore_attempt_count, 2);
+  assert.equal(record.row.restore_last_error, 'RESTORE_DOWNLOAD_IN_PROGRESS');
+  assert.equal(record.row.restore_next_attempt_at, null);
+  assert.equal(record.row.restore_verified_at, null);
+  assert.equal(record.row.personal_storage_verified_at, null);
+  assert.equal(record.row.release_scheduled_at, null);
+  assert.equal(record.row.central_status, null);
+  assert.equal(app.errors.length, 0);
+  assert.equal(app.events.length, 0);
+  assert.equal(app.releases.length, 0);
+  partial = false;
+  assert.deepEqual(await app.tick(), { verified: 1, failed: 0 });
+  assert.ok(record.row.restore_verified_at);
+  assert.ok(record.row.personal_storage_verified_at);
+  assert.equal(record.row.restore_attempt_count, 0);
+  assert.equal(app.releases.length, 1);
+});
 
 test('a timed-out FIFO head backs off so the next valid backup verifies and releases', async () => {
   const head = backup(0);

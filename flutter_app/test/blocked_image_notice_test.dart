@@ -5,8 +5,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _title = 'התמונה נחסמה בבדיקת הבטיחות';
-const _reason =
-    'התמונה לא עברה את בדיקת הבטיחות בשל תוכן אלים.';
+const _reason = 'התמונה לא עברה את בדיקת הבטיחות בשל תוכן אלים.';
 const _onlyYou = 'התמונה מוצגת רק לך ולא נשלחה';
 const _recipient = 'מור אליהו';
 const _fileName = 'camera-1789649113675-with-a-long-file-name.jpg';
@@ -65,23 +64,15 @@ Future<void> _pumpNotice(
 }
 
 void _expectRightAlignedPreview(WidgetTester tester, double viewportWidth) {
-  expect(_preview, findsOneWidget);
-  expect(_menu, findsOneWidget);
-  final imageRect = tester.getRect(_preview);
-  final menuRect = tester.getRect(_menu);
-  expect(imageRect.right, closeTo(viewportWidth, 1));
-  expect(menuRect.right, lessThanOrEqualTo(imageRect.left));
-  expect(imageRect.top, closeTo(menuRect.top, 1));
-  expect(menuRect.left, greaterThanOrEqualTo(0));
-  expect(imageRect.width, greaterThan(0));
+  expect(_preview, findsNothing);
+  expect(_marker, findsOneWidget);
+  expect(find.text('התמונה נחסמה'), findsOneWidget);
+  expect(tester.getRect(_marker).right, lessThanOrEqualTo(viewportWidth));
   expect(tester.takeException(), isNull);
 }
 
 Future<void> _openDetails(WidgetTester tester) async {
-  await tester.tap(_menu);
-  await tester.pumpAndSettle();
-  expect(_details, findsNothing);
-  await tester.tap(find.text('פרטי החסימה'));
+  await tester.tap(find.text('התמונה נחסמה'));
   await tester.pumpAndSettle();
   expect(_details, findsOneWidget);
 }
@@ -149,31 +140,14 @@ void main() {
     }
   }
 
-  testWidgets('preview has exactly one block badge and no text or zoom icon',
-      (tester) async {
-    await _pumpNotice(tester);
-    expect(_marker, findsOneWidget);
-    expect(find.descendant(of: _preview, matching: _marker), findsOneWidget);
-    expect(find.descendant(of: _preview, matching: find.byType(Text)),
-        findsNothing);
-    expect(find.descendant(of: _preview, matching: find.byType(Icon)),
-        findsOneWidget);
-    expect(find.byIcon(Icons.gpp_bad_outlined), findsOneWidget);
-    expect(find.byIcon(Icons.zoom_in), findsNothing);
-    expect(find.byIcon(Icons.zoom_out_map), findsNothing);
-    expect(
-        tester.getRect(_preview).contains(tester.getCenter(_marker)), isTrue);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('preview opens the image while the blocked badge opens its reason',
-      (tester) async {
+  testWidgets('compact row does not build or open the image', (tester) async {
     var imageTaps = 0;
     await _pumpNotice(tester, onImageTap: () => imageTaps++);
-    await tester.tapAt(tester.getCenter(_preview));
-    await tester.tapAt(tester.getCenter(_marker));
-    await tester.pump();
-    expect(imageTaps, 1);
+    expect(_preview, findsNothing);
+    expect(find.byIcon(Icons.block), findsOneWidget);
+    await tester.tap(_marker);
+    await tester.pumpAndSettle();
+    expect(imageTaps, 0);
     expect(_details, findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -191,24 +165,15 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('three dots open provided image actions directly',
+  testWidgets('long press opens provided image actions directly',
       (tester) async {
     var moreActions = 0;
     await _pumpNotice(tester, onMoreActions: () => moreActions++);
-    await tester.tap(_menu);
+    await tester.longPress(find.text('התמונה נחסמה'));
     await tester.pumpAndSettle();
     expect(find.text('אפשרויות נוספות'), findsNothing);
     expect(moreActions, 1);
     expect(_details, findsNothing);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('menu omits unavailable additional actions', (tester) async {
-    await _pumpNotice(tester);
-    await tester.tap(_menu);
-    await tester.pumpAndSettle();
-    expect(find.text('פרטי החסימה'), findsOneWidget);
-    expect(find.text('אפשרויות נוספות'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

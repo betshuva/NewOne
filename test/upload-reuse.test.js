@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
+const sharp = require('sharp');
 const { acquireUploadLock, findReusableUpload } = require('../server/upload-reuse');
 const { contentAllowedByFilter, normalizeContentFilter } = require('../server/content-filter-policy');
 const { visuallyEquivalent } = require('../server/visual-fingerprint');
@@ -15,6 +16,12 @@ const routeStart = source.indexOf("app.post('/api/upload',");
 const routeEnd = source.indexOf('// ── Groups: list mine', routeStart);
 assert.ok(routeStart > 0 && routeEnd > routeStart);
 const VERSION = 'test-current';
+const ANIMATED_VERSION = `${VERSION}:animated20-time-v1`;
+const realIsPotentiallyAnimatedImage = vm.runInNewContext(source.slice(
+  source.indexOf('function isPotentiallyAnimatedImage('),
+  source.indexOf('async function scanStaticImage(')) + ';isPotentiallyAnimatedImage', {
+  imageAnimationPolicy: require('../server/image-animation-policy'),
+});
 const realResolveAllowedUpload = vm.runInNewContext(source.slice(
   source.indexOf('const ALLOWED_TYPES ='), source.indexOf('const upload = multer(')) +
   ';resolveAllowedUpload', { Buffer, uploadHeader: require('../server/upload-file-source').uploadHeader, path: require('node:path'),
@@ -26,6 +33,16 @@ const OBJECT = { category: 'nonHumanImages', detectedCategories: ['nonHumanImage
 const FINGERPRINT = { algorithm: 'ahash16+dhash16-v1', aspect: 0.666667,
   averageHash: '0123456789abcdef', differenceHash: 'fedcba9876543210' };
 let fixtureId = 0;
+
+async function animatedGifBytes(frames = 13) {
+  const pixels = Buffer.alloc(frames * 4);
+  for (let frame = 0; frame < frames; frame++) {
+    pixels[frame * 4 + frame % 3] = 255;
+    pixels[frame * 4 + 3] = 255;
+  }
+  return sharp(pixels, { raw: { width: 1, height: frames, channels: 4, pageHeight: 1 } })
+    .gif({ loop: 0, delay: Array(frames).fill(100) }).toBuffer();
+}
 
 function harness({ classification = MEN, result, scanDelay = false,
   fingerprint = null, trustedBuiltinExpression = false, conversionError = null,
@@ -146,7 +163,9 @@ function harness({ classification = MEN, result, scanDelay = false,
     auth() {}, uploadRateLimit() {}, cleanAttachment() {}, attachmentUpload: { single() {} },
     ...require('../server/upload-file-source'),
     MAX_RECORDING_INPUT_BYTES: require('../server/audio-moderation').MAX_RECORDING_INPUT_BYTES,
-    BLOCKED_TYPES: [], MODERATION_CACHE_VERSION: VERSION, VIDEO_SCAN_VERSION: VERSION, SCAN_BOT_ID: 'scan-bot',
+    BLOCKED_TYPES: [], MODERATION_CACHE_VERSION: VERSION, VIDEO_SCAN_VERSION: VERSION,
+    ANIMATED_SCAN_VERSION: ANIMATED_VERSION, isPotentiallyAnimatedImage: realIsPotentiallyAnimatedImage,
+    SCAN_BOT_ID: 'scan-bot',
     approvedAudioResult: vm.runInNewContext(source.slice(source.indexOf('function approvedAudioResult('),
       source.indexOf('// Legacy queued recordings')) + ';approvedAudioResult'),
     normalizeUploadFileName: value => value,
@@ -240,6 +259,23 @@ test('uncached videos enter the durable queue without scanning inside the upload
   assert.equal(api.activeUploadFileIds.size, 0);
 });
 
+test('animated chat images return pending without scanning and persist the exact destination', async () => {
+  for (const body of [{ groupId: 'group' }, { toUserId: 'friend' }]) {
+    const api = harness();
+    const response = await api.upload({ name: 'keyboard-image.gif', mime: 'image/gif',
+      bytes: await animatedGifBytes(), body: { ...body, clientUploadId: 'uploading_group_gif_1' } });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.status, 'pending');
+    assert.equal(api.state.scans, 0);
+    assert.equal(api.state.pending.length, 1);
+    assert.equal(api.state.pending[0].values[1], body.toUserId || null);
+    assert.equal(api.state.pending[0].values[2], body.groupId || null);
+    assert.equal(api.state.files[0].moderation_status, 'pending');
+    assert.equal(api.state.files[0].moderation_details.animated, true);
+    assert.equal(api.state.files[0].client_upload_id, 'uploading_group_gif_1');
+  }
+});
+
 test('pending uploads retain a bounded client identity for owner history reconciliation', async () => {
   for (const key of ['uploading_group_123_1', 'uploading_group_123_2', '', '<invalid>', 'x'.repeat(161)]) {
     const api = harness();
@@ -305,6 +341,8 @@ test('repeat upload reuses approved owner file and preserves a renamed library e
   const api = harness();
   const first = await api.upload();
   assert.equal(first.statusCode, 200);
+  assert.equal(api.state.files[0].moderation_details.moderationVersion, VERSION,
+    'static uploads retain their existing moderation cache version');
   api.state.files[0].original_name = 'השם שבחרתי.png';
   const before = JSON.stringify(api.state.files[0]);
   const again = await api.upload({ name: 'another-name.png', body: { toUserId: 'friend' } });
@@ -415,6 +453,64 @@ test('current rejected scan and outdated moderation version cannot reuse a forme
   assert.equal(api.state.files[1].moderation_status, 'approved');
 });
 
+test('a GIF rejected by the old 12-frame cap is rescanned despite the same content hash', async () => {
+  const bytes = await animatedGifBytes();
+  assert.equal((await sharp(bytes, { animated: true }).metadata()).pages, 13);
+  const api = harness({ result: { blocked: false, pending: false, animated: true,
+    classification: OBJECT, frameCount: 13, framesScanned: 13 } });
+  const oldRejection = { id: 'old-gif-cap', user_id: api.state.owner,
+    content_sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    file_type: 'image', mime_type: 'image/gif', file_size: bytes.length,
+    public_url: '/old/rejected.gif', moderation_status: 'rejected',
+    moderation_details: { moderationVersion: VERSION, blocked: true,
+      blockedBy: 'animatedImageTooManyFrames', reason: 'GIF יכול להכיל עד 12 פריימים',
+      frameCount: 13, framesScanned: 0 } };
+  api.state.files.push(oldRejection);
+  const priorRecord = JSON.stringify(oldRejection);
+
+  const response = await api.upload({ bytes, name: 'animation.gif', mime: 'image/gif' });
+  assert.equal(response.statusCode, 200);
+  assert.notEqual(response.body.status, 'rejected');
+  assert.equal(api.state.scans, 1, 'the old cap decision cannot satisfy the new animation policy');
+  assert.equal(api.state.blobs.length, 1);
+  assert.equal(api.state.files.length, 2);
+  assert.equal(JSON.stringify(oldRejection), priorRecord, 'the old decision remains an independent record');
+  const current = api.state.files[1];
+  assert.equal(current.content_sha256, oldRejection.content_sha256);
+  assert.equal(current.moderation_status, 'approved');
+  assert.equal(current.moderation_details.moderationVersion, ANIMATED_VERSION);
+  assert.equal(current.moderation_details.cacheHit, undefined);
+  assert.equal(current.moderation_details.framesScanned, 13);
+});
+
+test('GIF approval under the current sampling policy reuses the owner file and exact scan cache', async () => {
+  const bytes = await animatedGifBytes();
+  const api = harness({ result: { blocked: false, pending: false, animated: true,
+    classification: OBJECT, frameCount: 13, framesScanned: 13 } });
+  const options = { bytes, name: 'animation.gif', mime: 'image/gif' };
+  const first = await api.upload(options);
+  assert.equal(first.statusCode, 200);
+  assert.equal(api.state.files[0].moderation_details.moderationVersion, ANIMATED_VERSION);
+  const firstRecord = JSON.stringify(api.state.files[0]);
+  const ownerAgain = await api.upload({ ...options, name: 'renamed-animation.gif' });
+  assert.equal(ownerAgain.body.url, first.body.url);
+  assert.equal(api.state.files.length, 1);
+  assert.equal(api.state.blobs.length, 1);
+  assert.equal(api.state.scans, 1);
+  assert.equal(JSON.stringify(api.state.files[0]), firstRecord);
+
+  const anotherOwner = await api.upload({ ...options, owner: 'other-owner' });
+  assert.equal(anotherOwner.statusCode, 200);
+  assert.notEqual(anotherOwner.body.url, first.body.url);
+  assert.equal(api.state.files.length, 2);
+  assert.equal(api.state.blobs.length, 2);
+  assert.equal(api.state.scans, 1, 'a current exact GIF approval avoids another provider scan');
+  assert.equal(api.state.files[1].moderation_details.moderationVersion, ANIMATED_VERSION);
+  assert.equal(api.state.files[1].moderation_details.cacheHit, true);
+  assert.equal(api.state.files[1].moderation_details.cacheMatch, 'exact');
+  assert.equal(api.state.files[1].moderation_details.framesScanned, 13);
+});
+
 for (const exemption of [{ source: 'builtin-expression' }, { scanSkipped: true }]) {
   const label = Object.keys(exemption)[0];
   test(`ordinary uploads rescan an exact cached ${label} exemption`, async () => {
@@ -495,8 +591,9 @@ test('listing reuse stays within listing storage and still enforces object-only 
 
 test('reused GIF still applies explicit rights and title, and scan bot still receives a report', async () => {
   const api = harness();
-  const options = { name: 'picture.gif', mime: 'image/gif' };
+  const options = { name: 'picture.gif', mime: 'image/gif', bytes: await animatedGifBytes(2) };
   const first = await api.upload(options);
+  assert.equal(api.state.files[0].moderation_details.moderationVersion, ANIMATED_VERSION);
   const unauthorized = await api.upload({ ...options, body: { sharedGif: 'true' } });
   assert.equal(unauthorized.statusCode, 400);
   const share = await api.upload({ ...options, body: { sharedGif: 'true', rightsConfirmed: 'true',
@@ -730,6 +827,8 @@ test('listing videos queue and reuse a complete scan when personal video viewing
   assert.equal(pending.body.status, 'pending');
   assert.equal(api.state.files[0].context_type, 'listing');
   assert.equal(api.state.files[0].moderation_details.listingVideoProof.source, VIDEO_PROBE_VERSION);
+  assert.equal(api.state.files[0].moderation_details.moderationVersion, VERSION,
+    'video uploads retain their existing scan cache version');
   assert.equal(api.state.pending[0].values[1], null);
   assert.equal(api.state.pending[0].values[2], null);
   // Simulate the durable worker's completed scan, then exercise the real

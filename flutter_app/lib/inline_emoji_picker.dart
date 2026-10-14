@@ -78,6 +78,7 @@ class _InlineEmojiPickerState extends State<InlineEmojiPicker> {
             label is! String ||
             code is! String ||
             !RegExp(r'^[0-9a-f]+(?:-[0-9a-f]+)*$').hasMatch(code) ||
+            const {'1f3e0', '1f3e1'}.contains(code) ||
             !seen.add(emoji)) {
           continue;
         }

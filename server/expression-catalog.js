@@ -56,12 +56,22 @@ function createExpressionLibrary(root, { onChange = () => {} } = {}) {
       fileList = discoveredFiles;
       onChange();
     }
-    const labels = legacy.categories.find(category => category.id === 'user-stickers')?.labels || [];
-    const emojis = registry.items.filter(item => names.has(item.file)).map(item => ({
+    const stickerCategory = legacy.categories.find(category => category.id === 'user-stickers');
+    const emojiCategory = legacy.categories.find(category => category.id === 'user-emojis');
+    const removedIds = category => new Set(Array.isArray(category?.removedIds)
+      ? category.removedIds.filter(Number.isInteger) : []);
+    const removedStickerIds = removedIds(stickerCategory);
+    const removedEmojiIds = removedIds(emojiCategory);
+    const labels = stickerCategory?.labels || [];
+    const emojis = registry.items.filter(item => names.has(item.file)
+      && !removedEmojiIds.has(item.id)).map(item => ({
       id: `user-emojis-${item.id}`, emojiId: item.id, label: item.label,
       url: `/betshuva-app/api/expressions/emoji/${item.id}`, animated: /\.gif$/i.test(item.file),
     }));
-    const stickers = stickerNames.map(file => {
+    const stickers = stickerNames.filter(file => {
+      const id = /^sticker-(\d+)\.png$/i.exec(file)?.[1];
+      return !id || !removedStickerIds.has(Number(id));
+    }).map(file => {
       const id = /^sticker-(\d+)\.png$/i.exec(file)?.[1];
       const libraryUrl = `/betshuva-app/expression-library/stickers/${encodeURIComponent(file)}`;
       return {

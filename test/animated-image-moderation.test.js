@@ -27,6 +27,7 @@ function scanner(overrides = {}) {
     createImageReviewState: () => ({}),
     isPotentiallyAnimatedImage: buffer => imageAnimationPolicy.potentialAnimationFormat(buffer) !== null,
     imageAnimationPolicy, imageClassificationOutcome, sharp,
+    ANIMATED_SCAN_VERSION: 'fixture-animated20',
     scanStaticImage: async () => ({ blocked: false, classification: objectClassification }),
     ...overrides,
   });
@@ -41,6 +42,89 @@ async function animation(format, frames = 2) {
   return sharp(pixels, { raw: { width: 1, height: frames, channels: 4, pageHeight: 1 } })
     [format]({ loop: 0, delay: Array(frames).fill(100), lossless: true }).toBuffer();
 }
+
+async function indexedAnimation(format, delays) {
+  const pixels = Buffer.alloc(delays.length * 4);
+  for (let frame = 0; frame < delays.length; frame++) {
+    pixels[frame * 4] = frame + 11;
+    pixels[frame * 4 + 1] = (frame * 7 + 31) % 256;
+    pixels[frame * 4 + 2] = (frame * 13 + 71) % 256;
+    pixels[frame * 4 + 3] = 255;
+  }
+  const bytes = await sharp(pixels, { raw: {
+    width: 1, height: delays.length, channels: 4, pageHeight: 1,
+  } })[format]({ loop: 0, delay: delays, lossless: true }).toBuffer();
+  return { bytes, pixels };
+}
+
+test('animation sampling checks every short animation frame with its original timestamp', () => {
+  for (const frameCount of [1, 2, 12, 13, 20]) {
+    assert.deepEqual(imageAnimationPolicy.sampleAnimationFrames({
+      pages: frameCount, delay: Array(frameCount).fill(100),
+    }), Array.from({ length: frameCount }, (_, frameIndex) =>
+      ({ frameIndex, timeSeconds: frameIndex / 10 })));
+  }
+  assert.deepEqual(imageAnimationPolicy.sampleAnimationFrames({}), [{ frameIndex: 0, timeSeconds: 0 }]);
+});
+
+test('animation sampling selects exact displayed frames uniformly over the full duration', () => {
+  const samples = imageAnimationPolicy.sampleAnimationFrames({ pages: 37, delay: Array(37).fill(100) });
+  const expected = [0, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 36];
+  assert.deepEqual(samples.map(sample => sample.frameIndex), expected);
+  assert.deepEqual(samples.map(sample => sample.timeSeconds), expected.map(index => index / 10));
+});
+
+test('animation sampling honors long displayed holds and deduplicates repeated timeline selections', () => {
+  const delay = Array(37).fill(100);
+  delay[9] = 10000;
+  const samples = imageAnimationPolicy.sampleAnimationFrames({ pages: 37, delay });
+  assert.deepEqual(samples, [
+    { frameIndex: 0, timeSeconds: 0 }, { frameIndex: 7, timeSeconds: .7 },
+    { frameIndex: 9, timeSeconds: .9 }, { frameIndex: 15, timeSeconds: 11.4 },
+    { frameIndex: 22, timeSeconds: 12.1 }, { frameIndex: 29, timeSeconds: 12.8 },
+    { frameIndex: 36, timeSeconds: 13.5 },
+  ]);
+  const finalHold = Array(37).fill(100);
+  finalHold[36] = 100000;
+  const ending = imageAnimationPolicy.sampleAnimationFrames({ pages: 37, delay: finalHold });
+  assert.deepEqual(ending.map(sample => sample.frameIndex), [0, 36]);
+});
+
+test('animation sampling chooses the next source frame at exact duration boundaries', () => {
+  const samples = imageAnimationPolicy.sampleAnimationFrames({ pages: 38, delay: Array(38).fill(100) });
+  assert.deepEqual(samples.map(sample => sample.frameIndex),
+    [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 37]);
+});
+
+test('animation sampling handles missing and invalid delays without invalid timestamps', () => {
+  const expected = [
+    { frameIndex: 0, timeSeconds: 0 }, { frameIndex: 1, timeSeconds: .05 },
+    { frameIndex: 2, timeSeconds: .15 }, { frameIndex: 3, timeSeconds: .25 },
+    { frameIndex: 4, timeSeconds: .35 }, { frameIndex: 5, timeSeconds: .45 },
+    { frameIndex: 6, timeSeconds: .55 }, { frameIndex: 7, timeSeconds: .65 },
+  ];
+  assert.deepEqual(imageAnimationPolicy.sampleAnimationFrames({ pages: 8,
+    delay: [50, 0, -1, NaN, Infinity, Number.MAX_VALUE, '100'],
+  }), expected);
+  const uniform = imageAnimationPolicy.sampleAnimationFrames({ pages: 37, delay: Array(37).fill(100) });
+  for (const invalid of [undefined, null, {}, 100, []]) {
+    assert.deepEqual(imageAnimationPolicy.sampleAnimationFrames({ pages: 37, delay: invalid }), uniform);
+  }
+  assert.deepEqual(imageAnimationPolicy.sampleAnimationFrames({ pages: 3, delay: [10] }), [
+    { frameIndex: 0, timeSeconds: 0 }, { frameIndex: 1, timeSeconds: .01 },
+    { frameIndex: 2, timeSeconds: .11 },
+  ]);
+});
+
+test('animation sampling retains valid submillisecond durations and rejects invalid frame counts', () => {
+  assert.deepEqual(imageAnimationPolicy.sampleAnimationFrames({ pages: 3, delay: [.5, 1.5, 3] }), [
+    { frameIndex: 0, timeSeconds: 0 }, { frameIndex: 1, timeSeconds: .0005 },
+    { frameIndex: 2, timeSeconds: .002 },
+  ]);
+  for (const pages of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => imageAnimationPolicy.sampleAnimationFrames({ pages }), RangeError);
+  }
+});
 
 const crcTable = Array.from({ length: 256 }, (_, value) => {
   for (let bit = 0; bit < 8; bit++) value = value & 1
@@ -138,20 +222,73 @@ for (const format of ['gif', 'webp']) {
     }
   });
 
-  test(`${format} keeps the 12-frame limit and rejects 13 frames before calling providers`, async () => {
+  test(`${format} scans all twenty frames and samples longer animations without a frame-count rejection`, async () => {
     let calls = 0;
     const scan = scanner({ scanStaticImage: async () => {
       calls++; return { blocked: false, classification: objectClassification };
     } });
-    const twelve = await scan(await animation(format, 12));
-    assert.equal(twelve.blocked, false); assert.equal(twelve.framesScanned, 12);
-    assert.equal(calls, 12);
+    const twenty = await scan(await animation(format, 20));
+    assert.equal(twenty.blocked, false); assert.equal(twenty.framesScanned, 20);
+    assert.equal(twenty.sampledFrames, 20); assert.equal(calls, 20);
     calls = 0;
-    const thirteen = await scan(await animation(format, 13));
-    assert.equal(thirteen.blocked, true);
-    assert.equal(thirteen.blockedBy, 'animatedImageTooManyFrames');
-    assert.equal(thirteen.frameCount, 13); assert.equal(thirteen.framesScanned, 0);
-    assert.equal(calls, 0);
+    const longer = await scan(await animation(format, 37));
+    assert.equal(longer.blocked, false); assert.equal(longer.blockedBy, null);
+    assert.equal(longer.frameCount, 37); assert.equal(longer.framesScanned, 20);
+    assert.equal(longer.sampledFrames, 20); assert.equal(calls, 20);
+  });
+
+  test(`${format} scans exactly the selected decoded frames and clears first-frame SafeSearch reuse`, async () => {
+    for (const count of [25, 37]) {
+      const delay = Array(count).fill(100);
+      if (count === 37) delay[9] = 10000;
+      const { bytes, pixels } = await indexedAnimation(format, delay);
+      const metadata = await sharp(bytes, { animated: true }).metadata();
+      assert.equal(metadata.pages, count);
+      const expected = imageAnimationPolicy.sampleAnimationFrames(metadata);
+      const seen = [], states = [], tracking = { storedFileId: 'fixture-only' };
+      const precomputed = { adult: 'VERY_UNLIKELY', racy: 'VERY_UNLIKELY' };
+      const scan = scanner({ scanStaticImage: async (frame, options) => {
+        assert.equal(options.googleSafeSearch, undefined);
+        assert.equal(options.tracking, tracking);
+        states.push(options.reviewState);
+        seen.push(Array.from((await sharp(frame).raw().toBuffer()).subarray(0, 3)));
+        return { blocked: false, classification: objectClassification };
+      } });
+      const result = await scan(bytes, { tracking, googleSafeSearch: precomputed });
+      assert.equal(result.blocked, false);
+      assert.equal(result.frameCount, count);
+      assert.equal(result.framesScanned, expected.length);
+      assert.equal(result.sampledFrames, expected.length);
+      assert.ok(expected.length <= 20);
+      assert.equal(new Set(states).size, 1);
+      assert.deepEqual(seen, expected.map(({ frameIndex }) => Array.from(
+        pixels.subarray(frameIndex * 4, frameIndex * 4 + 3))));
+      assert.equal(result.moderationVersion, 'fixture-animated20');
+      assert.deepEqual(JSON.parse(JSON.stringify(result.frameSamples)), expected);
+      assert.deepEqual(Array.from(result.frameResults, ({ frameIndex, timeSeconds }) =>
+        ({ frameIndex, timeSeconds })), expected);
+      assert.equal(precomputed.adult, 'VERY_UNLIKELY');
+      assert.equal(await createVisualFingerprint(bytes), null);
+    }
+  });
+
+  test(`${format} stops on the last sampled source frame and reports its original number`, async () => {
+    const count = 37;
+    const { bytes, pixels } = await indexedAnimation(format, Array(count).fill(100));
+    let calls = 0;
+    const scan = scanner({ scanStaticImage: async frame => {
+      calls++;
+      const pixel = await sharp(frame).raw().toBuffer();
+      const last = pixel[0] === pixels[(count - 1) * 4];
+      return { blocked: last, reason: last ? 'fixture final-frame block' : undefined,
+        classification: last ? classification('women') : objectClassification };
+    } });
+    const result = await scan(bytes);
+    assert.equal(result.blocked, true);
+    assert.equal(result.framesScanned, 20); assert.equal(calls, 20);
+    assert.match(result.reason, /37/);
+    assert.equal(result.frameResults.at(-1).frameIndex, 36);
+    assert.deepEqual(result.classification.detectedCategories, ['nonHumanImages', 'women']);
   });
 }
 
@@ -213,4 +350,51 @@ test('a failed later-frame decode never returns the preceding frame approval', a
   const result = await scan(await animation('gif'));
   assert.equal(result.blocked, true); assert.equal(result.blockedBy, 'animatedImageDecode');
   assert.equal(result.framesScanned, 1); assert.equal(calls, 1);
+});
+
+test('a failed sampled source-frame decode preserves earlier samples without approving the animation', async () => {
+  const { bytes } = await indexedAnimation('gif', Array(37).fill(100));
+  let calls = 0;
+  const scan = scanner({ sharp: (input, options) => options?.page === 7
+    ? { png() { return this; }, toBuffer: async () => { throw new Error('fixture sampled decode failure'); } }
+    : sharp(input, options),
+  scanStaticImage: async () => {
+    calls++; return { blocked: false, classification: objectClassification };
+  } });
+  const result = await scan(bytes);
+  assert.equal(result.blocked, true);
+  assert.equal(result.blockedBy, 'animatedImageDecode');
+  assert.equal(result.frameCount, 37);
+  assert.equal(result.sampledFrames, 20);
+  assert.equal(result.framesScanned, 4); assert.equal(calls, 4);
+  assert.match(result.reason, /8/);
+  assert.deepEqual(Array.from(result.frameResults, result => result.frameIndex), [0, 1, 3, 5]);
+});
+
+test('animation metadata avoids the stacked pixel limit while each selected frame retains its limit', async () => {
+  const pixels = Buffer.alloc(2 * 2 * 3 * 4);
+  for (let page = 0; page < 3; page++) for (let pixel = 0; pixel < 4; pixel++) {
+    const start = (page * 4 + pixel) * 4;
+    pixels[start + page] = 255; pixels[start + 3] = 255;
+  }
+  const bytes = await sharp(pixels, { raw: {
+    width: 2, height: 6, channels: 4, pageHeight: 2,
+  } }).gif({ loop: 0, delay: [100, 1000, 100] }).toBuffer();
+  await assert.rejects(sharp(bytes, { animated: true, limitInputPixels: 8 }).metadata(),
+    /pixel limit/i);
+  const seen = [];
+  const scan = scanner({ sharp: (input, options) => sharp(input, {
+    limitInputPixels: 8, ...options,
+  }), scanStaticImage: async frame => {
+    const decoded = await sharp(frame, { limitInputPixels: 8 }).raw()
+      .toBuffer({ resolveWithObject: true });
+    assert.equal(decoded.info.width, 2); assert.equal(decoded.info.height, 2);
+    seen.push(Array.from(decoded.data.subarray(0, 3)));
+    return { blocked: false, classification: objectClassification };
+  } });
+  const result = await scan(bytes);
+  assert.equal(result.blocked, false);
+  assert.equal(result.frameCount, 3); assert.equal(result.framesScanned, 3);
+  assert.deepEqual(seen, [[255, 0, 0], [0, 255, 0], [0, 0, 255]]);
+  assert.deepEqual(Array.from(result.frameSamples, sample => sample.timeSeconds), [0, .1, 1.1]);
 });

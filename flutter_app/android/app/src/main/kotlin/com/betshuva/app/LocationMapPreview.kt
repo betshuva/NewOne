@@ -3,6 +3,7 @@ package com.betshuva.app
 import android.content.Context
 import android.graphics.Color
 import android.net.Uri
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.webkit.WebResourceError
@@ -57,19 +58,33 @@ private class LocationMapPreview(context: Context, url: String) : PlatformView {
         }
         // The preview has no JavaScript bridge. Flutter opens external maps.
         webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-                request.isForMainFrame
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                if (request.isForMainFrame) {
+                    if (!disposed) fallback.visibility = View.VISIBLE
+                    return true
+                }
+                // Only the map iframe can load or follow Google's embed redirect.
+                return request.method != "GET" ||
+                    !(validMapUrl(request.url.toString()) ||
+                        (request.isRedirect && validEmbedRedirect(request.url)))
+            }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (!disposed && request.isForMainFrame) fallback.visibility = View.VISIBLE
+                if (!disposed && (request.isForMainFrame || isMapDocument(request.url))) {
+                    fallback.visibility = View.VISIBLE
+                }
             }
 
             override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
-                if (!disposed && request.isForMainFrame) fallback.visibility = View.VISIBLE
+                if (!disposed && (request.isForMainFrame || isMapDocument(request.url))) {
+                    fallback.visibility = View.VISIBLE
+                }
             }
         }
         if (validMapUrl(url)) {
-            webView.loadUrl(url)
+            webView.loadDataWithBaseURL(
+                "https://betshuva.com/", mapPreviewHtml(url), "text/html", "UTF-8", null
+            )
         } else {
             fallback.visibility = View.VISIBLE
         }
@@ -98,4 +113,36 @@ private class LocationMapPreview(context: Context, url: String) : PlatformView {
     } catch (_: Exception) {
         false
     }
+
+    private fun validEmbedRedirect(uri: Uri): Boolean = try {
+        val origins = uri.getQueryParameters("origin")
+        val payloads = uri.getQueryParameters("pb")
+        uri.scheme == "https" && uri.host == "www.google.com" &&
+            (uri.port == -1 || uri.port == 443) && uri.userInfo == null &&
+            uri.fragment == null && uri.path == "/maps/embed" &&
+            uri.encodedQuery?.split('&')?.size == 2 &&
+            uri.queryParameterNames == setOf("origin", "pb") &&
+            origins == listOf("mfe") && payloads.size == 1 &&
+            payloads[0].isNotBlank() && payloads[0].length <= 4096
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun isMapDocument(uri: Uri): Boolean =
+        validMapUrl(uri.toString()) || validEmbedRedirect(uri)
+
+    private fun mapPreviewHtml(url: String): String = """
+        <!doctype html>
+        <html lang="he" dir="rtl">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; frame-src https://www.google.com/maps https://www.google.com/maps/embed; base-uri 'none'; form-action 'none'">
+          <style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{display:block;width:100%;height:100%;border:0;pointer-events:none}</style>
+        </head>
+        <body>
+          <iframe src="${TextUtils.htmlEncode(url)}" title="מפת המיקום המשותף" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer"></iframe>
+        </body>
+        </html>
+    """.trimIndent()
 }

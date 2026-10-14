@@ -6,6 +6,29 @@ import 'dart:js' as js;
 class ChatUploadPickerBrowser {
   late js.JsObject _picker;
 
+  void installCancelledSelection() {
+    js.context.callMethod('eval', [
+      r"""
+      (() => {
+        const original = HTMLInputElement.prototype.click;
+        let selections = 0;
+        HTMLInputElement.prototype.click = function(...args) {
+          if (this.type !== 'file' || !this.accept.includes('.mp4')) return original.apply(this, args);
+          selections++;
+          const transfer = new DataTransfer();
+          Object.defineProperty(this, 'files', {configurable: true, value: transfer.files});
+          queueMicrotask(() => this.dispatchEvent(new Event('change')));
+        };
+        window.chatUploadPickerTest = {
+          selections: () => selections,
+          restore: () => {HTMLInputElement.prototype.click = original; delete window.chatUploadPickerTest;}
+        };
+      })();
+    """
+    ]);
+    _picker = js.context['chatUploadPickerTest'] as js.JsObject;
+  }
+
   void install(String name, List<int> bytes) {
     js.context.callMethod('eval', [
       r'''

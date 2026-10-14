@@ -283,7 +283,7 @@ const GOOGLE_PLAY_REVIEWER_ID = '5256aa61-3180-414c-bbf6-a036e8c16248';
 const WELCOME_MESSAGE =
   'שלום 🌿 אני ישראל, מדריך התמיכה של בתשובה. אפשר לשאול אותי על חברים, שיחות, קבוצות, סינון, קבצים, גיבוי, מודעות והגדרות.\n\nנתקלת בתקלה או שמשהו לא עובד? אעזור להכין פנייה למפתח דרך „הפניות שלי”, ורק לאחר אישורך היא תיפתח.\nbetshuva://app/my-issues';
 const SAFE_INFORMATION_WELCOME_MESSAGE =
-  'שלום 🌿 זהו מידע בטוח · AI — שירות אוטומטי ולא אדם.\n\nאפשר לשאול על השוואת מוצרים ומחירים, תחבורה ציבורית, טיולים, שירותי ממשלה, בתי חולים, בנקים ומשכנתאות.\n\nהמידע מובא בסביבה מסוננת, עם עדיפות למקורות רשמיים וקישורים שנבדקו. השירות אינו רב, רופא או יועץ פיננסי. לשאלה הלכתית יש לשאול רב.\n\nלעולם אין לשלוח כאן סיסמה, קוד אימות או מספר כרטיס מלא.';
+  'שלום 🌿 זהו מידע בטוח · AI — שירות אוטומטי ולא אדם.\n\nאפשר לשאול ולבקש הסברים מפורטים על הלכה, לימוד, בריאות, פיננסים, השוואת מוצרים ומחירים, תחבורה, טיולים ושירותים.\n\nנשמרות שלוש הגנות: הפניה לעזרה במצבי חירום רפואי או אובדנות; הגנה על מידע רגיש; וסינון תוכן מיני, היכרויות, הימורים, רכילות, אלימות גרפית וקישורים לרשתות חברתיות.\n\nלעולם אין לשלוח כאן סיסמה, קוד אימות, מספר כרטיס מלא או CVV.';
 
 const BUILTIN_EXPRESSION_ROOT = path.join(__dirname, '..', 'expression-library');
 const linkSafetyCache = new Map();
@@ -2346,6 +2346,9 @@ async function scanStaticImage(buffer, options = {}) {
 // change. Exact-file cache entries from older versions are never reused.
 const MODERATION_CACHE_VERSION = `2026-10-13-animated-frame-policy-23:${moderationProviderPolicy()}`;
 const VIDEO_SCAN_VERSION = `${MODERATION_CACHE_VERSION}:video20-90min-v1`;
+// Animation sampling changes only animation cache entries, preserving durable
+// video scans and still-image results under their existing policy versions.
+const ANIMATED_SCAN_VERSION = `${MODERATION_CACHE_VERSION}:animated20-time-v1`;
 const unicodeEmojiModerator = createUnicodeEmojiModerator({
   extractEmoji: extractKeyboardEmoji,
   loadArtwork: createKeyboardEmojiArtworkLoader(),
@@ -2362,41 +2365,45 @@ async function scanImage(buffer, options = {}) {
   if (!isPotentiallyAnimatedImage(buffer))
     return scanStaticImage(buffer, options);
 
-  // Sharp currently decodes APNG as a static PNG. Never approve an animation
-  // whose remaining frames cannot pass the same checks as the first frame.
+  // Sharp currently decodes APNG as a static PNG, so additional animation
+  // samples cannot be decoded for the required checks.
   if (imageAnimationPolicy.potentialAnimationFormat(buffer) === 'apng') return {
     blocked: true,
     blockedBy: 'animatedPngUnsupported',
-    reason: 'תמונת PNG מונפשת (APNG) אינה נתמכת בסריקה. אפשר לשלוח GIF או WebP עם עד 12 פריימים',
+    reason: 'תמונת PNG מונפשת (APNG) אינה נתמכת בסריקה. אפשר לשלוח GIF או WebP',
     animated: true,
+    moderationVersion: ANIMATED_SCAN_VERSION,
     framesScanned: 0,
   };
 
-  let metadata;
+  let metadata, samples;
   try {
-    metadata = await sharp(buffer, { animated: true }).metadata();
+    // Read the timeline without stacking every page into one giant image.
+    // Pixel limits remain enforced when each selected page is decoded below.
+    metadata = await sharp(buffer).metadata();
+    samples = imageAnimationPolicy.sampleAnimationFrames(metadata);
   } catch (error) {
     return {
       blocked: true,
       blockedBy: 'animatedImageDecode',
       reason: 'לא ניתן לפענח את התמונה המונפשת לצורך סריקה',
+      animated: true,
+      moderationVersion: ANIMATED_SCAN_VERSION,
+      framesScanned: 0,
       error: error.message,
     };
   }
   const frameCount = Number(metadata.pages || 1);
-  const maxScannableFrames = 12;
-  if (frameCount > maxScannableFrames) {
-    return {
-      blocked: true,
-      blockedBy: 'animatedImageTooManyFrames',
-      reason: `GIF יכול להכיל עד ${maxScannableFrames} פריימים כדי שכל התמונה תיסרק`,
-      frameCount,
-      framesScanned: 0,
-    };
-  }
+  const animation = { animated: true, frameCount, sampledFrames: samples.length,
+    frameSamples: samples, moderationVersion: ANIMATED_SCAN_VERSION };
+  // A retry may carry one prior frame's SafeSearch result. It cannot serve as
+  // evidence for any other frame, so every selected frame gets a fresh check.
+  const frameOptions = { ...options };
+  delete frameOptions.googleSafeSearch;
 
   const frameResults = [];
-  for (let page = 0; page < frameCount; page++) {
+  for (const sample of samples) {
+    const page = sample.frameIndex;
     let frame;
     try {
       frame = await sharp(buffer, { animated: true, page, pages: 1 })
@@ -2407,31 +2414,32 @@ async function scanImage(buffer, options = {}) {
         blocked: true,
         blockedBy: 'animatedImageDecode',
         reason: `לא ניתן לסרוק את פריים ${page + 1} בתמונה המונפשת`,
-        frameCount,
-        framesScanned: page,
+        ...animation,
+        frameResults,
+        framesScanned: frameResults.length,
         error: error.message,
       };
     }
-    const result = await scanStaticImage(frame, options);
-    frameResults.push(result);
+    const result = await scanStaticImage(frame, { ...frameOptions });
+    frameResults.push({ ...result, ...sample });
     const classification = imageAnimationPolicy.mergedFrameClassification(frameResults);
-    if (result.scanStopped) return { ...result, classification, animated: true, frameResults,
-      frameCount, framesScanned: page + 1 };
+    if (result.scanStopped) return { ...result, classification, ...animation, frameResults,
+      framesScanned: frameResults.length };
     if (result.blocked) return {
       ...result,
       classification,
       frameResults,
-      reason: `GIF נחסם בפריים ${page + 1}: ${result.reason || 'תוכן לא מאושר'}`,
-      frameCount,
-      framesScanned: page + 1,
+      reason: `התמונה המונפשת נחסמה בפריים ${page + 1}: ${result.reason || 'תוכן לא מאושר'}`,
+      ...animation,
+      framesScanned: frameResults.length,
     };
     if (result.pending) return {
       ...result,
       classification,
       frameResults,
-      reason: `סריקת GIF ממתינה בפריים ${page + 1}: ${result.reason || 'שירות הסריקה אינו זמין'}`,
-      frameCount,
-      framesScanned: page + 1,
+      reason: `סריקת התמונה המונפשת ממתינה בפריים ${page + 1}: ${result.reason || 'שירות הסריקה אינו זמין'}`,
+      ...animation,
+      framesScanned: frameResults.length,
     };
   }
   return imageClassificationOutcome({
@@ -2439,10 +2447,9 @@ async function scanImage(buffer, options = {}) {
     classification: imageAnimationPolicy.mergedFrameClassification(frameResults),
     blocked: false,
     blockedBy: null,
-    animated: true,
+    ...animation,
     frameResults,
-    frameCount,
-    framesScanned: frameCount,
+    framesScanned: frameResults.length,
   });
 }
 
@@ -3607,11 +3614,7 @@ async function generateSystemAnswer(pool, userId, question, currentMessageId = n
 async function generateSafeInformationSystemAnswer(pool, userId, question) {
   const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
   try {
-    const [audience, history] = await Promise.all([
-      pool.query(
-        `SELECT (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
-         FROM users WHERE id=$1`, [userId]),
-      pool.query(
+    const history = await pool.query(
         `SELECT sender_id,body FROM messages m
          WHERE ((sender_id=$1 AND recipient_id=$2)
             OR (sender_id=$2 AND recipient_id=$1))
@@ -3619,8 +3622,7 @@ async function generateSafeInformationSystemAnswer(pool, userId, question) {
            AND NOT (sender_id=$1 AND deleted_for_sender=TRUE)
            AND NOT EXISTS (SELECT 1 FROM message_user_deletions d WHERE d.message_id=m.id AND d.user_id=$1)
         AND ${messageAfterConversationClear('m', '$1')}
-         ORDER BY created_at DESC LIMIT 8`, [userId, SAFE_INFORMATION_USER_ID]),
-    ]);
+         ORDER BY created_at DESC LIMIT 8`, [userId, SAFE_INFORMATION_USER_ID]);
     const messages = history.rows.reverse().map(row => ({
       role: row.sender_id === SAFE_INFORMATION_USER_ID ? 'assistant' : 'user',
       content: row.body || '',
@@ -3634,14 +3636,13 @@ async function generateSafeInformationSystemAnswer(pool, userId, question) {
       userId,
       question,
       history: messages,
-      isTeen: audience.rows[0]?.is_teen !== false,
       searchMarketplace: args => searchMarketplace(pool, userId, args),
       loadMarketplaceImages: ids => loadMarketplaceImages(pool, userId, ids),
       validateSource: async url => (await inspectExternalLink(url)).safe === true,
     });
   } catch (error) {
     console.error('safe information AI:', error.message);
-    return 'שירות המידע לא הצליח להשלים בדיקת מקורות כרגע. לא אציג מידע שאינו מאומת; אפשר לנסות שוב מאוחר יותר.';
+    return 'שירות המידע אינו זמין כרגע. אפשר לנסות שוב בעוד רגע.';
   }
 }
 
@@ -5913,6 +5914,10 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
                   AND receipt_user.read_receipts_enabled=FALSE
              THEN 'delivered' ELSE ms.status END AS message_status,
         sf.moderation_details->'classification' AS image_classification,
+        COALESCE(sf.moderation_details->'classification'->>'durationSeconds',
+          sf.moderation_details->'listingVideoProof'->>'durationSeconds',
+          sf.moderation_details->>'durationSeconds',
+          sf.moderation_details->'audio'->>'durationSeconds') AS media_duration_seconds,
         sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds,
         sf.moderation_status AS audio_moderation_status,
         sf.moderation_details AS _moderation_details
@@ -5967,6 +5972,10 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         sf.moderation_details->>'reason' AS scan_reason,
         sf.moderation_details->>'reasonCode' AS scan_reason_code,
         sf.moderation_details->'classification' AS image_classification,
+        COALESCE(sf.moderation_details->'classification'->>'durationSeconds',
+          sf.moderation_details->'listingVideoProof'->>'durationSeconds',
+          sf.moderation_details->>'durationSeconds',
+          sf.moderation_details->'audio'->>'durationSeconds') AS media_duration_seconds,
         sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds,
         sf.moderation_status AS audio_moderation_status,
         sf.content_purged_at,
@@ -8958,7 +8967,9 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
   if (file.size > maxBytes)
     return res.status(400).json({ error: `גודל קובץ מקסימלי: ${maxBytes / 1048576}MB` });
   if (allowed.dbType !== 'video' && !file.buffer) file.buffer = await fs.readFile(file.path);
-  const moderationVersion = allowed.dbType === 'video' ? VIDEO_SCAN_VERSION : MODERATION_CACHE_VERSION;
+  const moderationVersion = allowed.dbType === 'video' ? VIDEO_SCAN_VERSION
+    : allowed.dbType === 'image' && isPotentiallyAnimatedImage(file.buffer)
+      ? ANIMATED_SCAN_VERSION : MODERATION_CACHE_VERSION;
   let audioDurationSeconds;
   if (allowed.dbType === 'audio') {
     try {
@@ -9142,7 +9153,15 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
         delete scanResult.destinationFilterRejected;
         if (scanResult.blockedBy === 'sender_filter') delete scanResult.blockedBy;
       }
-    } else if (allowed.dbType === 'image')
+    } else if (allowed.dbType === 'image' && !scanBotUpload &&
+        (req.body.groupId || req.body.toUserId) &&
+        isPotentiallyAnimatedImage(file.buffer))
+      // Animated chat attachments can take longer than the installed client's
+      // upload timeout. Persist their destination and let the existing durable
+      // queue own both verification and delivery, including after disconnects.
+      scanResult = { blocked: false, pending: true, animated: true,
+        reason: 'האנימציה ממתינה לסריקה ותישלח אוטומטית לאחר אישור' };
+    else if (allowed.dbType === 'image')
       scanResult = await scanImage(file.buffer, { tracking: scanTracking });
     else if (allowed.dbType === 'video')
       // Frame verification can outlive the HTTP request. Give the durable
@@ -9938,6 +9957,10 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         r.body AS reply_body,
         CASE WHEN ms.status = 'read' THEN 1 ELSE 0 END AS is_read,
         sf.moderation_details->'classification' AS image_classification,
+        COALESCE(sf.moderation_details->'classification'->>'durationSeconds',
+          sf.moderation_details->'listingVideoProof'->>'durationSeconds',
+          sf.moderation_details->>'durationSeconds',
+          sf.moderation_details->'audio'->>'durationSeconds') AS media_duration_seconds,
         sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds,
         sf.moderation_status AS audio_moderation_status,
         sf.moderation_details AS _moderation_details
@@ -9978,6 +10001,7 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         sf.original_name AS body,
         sf.public_url AS file_url,
         sf.original_name AS file_name,
+        sf.file_size,
         NULL::uuid AS reply_to_id,
         sf.created_at,
         u.name AS sender_name,
@@ -9994,6 +10018,10 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         sf.moderation_details->>'reason' AS scan_reason,
         sf.moderation_details->>'reasonCode' AS scan_reason_code,
         sf.moderation_details->'classification' AS image_classification,
+        COALESCE(sf.moderation_details->'classification'->>'durationSeconds',
+          sf.moderation_details->'listingVideoProof'->>'durationSeconds',
+          sf.moderation_details->>'durationSeconds',
+          sf.moderation_details->'audio'->>'durationSeconds') AS media_duration_seconds,
         sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds
         ,sf.moderation_status AS audio_moderation_status
         ,sf.content_purged_at
@@ -13627,6 +13655,10 @@ app.get('/api/test-storage', adminAuth, async (req, res) => {
   }
 });
 
+require('./chat-design-settings').registerChatDesignRoutes(app, { getPool, adminAuth,
+  notify: payload => app.get('io')?.emit('chat:design-updated', payload),
+});
+
 // ── App Version (also wakes up DB on cold start) ─────────────────
 app.get('/api/version', async (req, res) => {
   try { const pool = await getPool(); await pool.query('SELECT 1'); } catch (_) {}
@@ -14212,7 +14244,8 @@ async function retryPendingScans() {
         else
           scanResult = await scanDocument(buffer, row.mime_type, { tracking: {
             storedFileId: row.stored_file_id, userId: row.user_id, workflow: 'retry', attempt } });
-        if (scanResult) scanResult.moderationVersion = row.file_type === 'video' ? VIDEO_SCAN_VERSION : MODERATION_CACHE_VERSION;
+        if (scanResult) scanResult.moderationVersion = row.file_type === 'video' ? VIDEO_SCAN_VERSION
+          : row.file_type === 'image' && scanResult.animated ? ANIMATED_SCAN_VERSION : MODERATION_CACHE_VERSION;
         }
 
         if (row.file_type === 'video' && scanResult) {
@@ -15009,6 +15042,7 @@ const withDriveVerification = createVerificationLock();
 const automaticRestoreQueue = createAutomaticRestoreQueue({
   getPool,
   withVerification: withDriveVerification,
+  checkpointRoot: path.join(__dirname, '..', '.transfer-state', 'restore-downloads'),
   releaseVerified: () => runSafeReleaseQueue(),
   onVerified: ({ storedFileId, userId, bytes }) =>
     logActivity(userId, 'automatic_restore_verification', { storedFileId, bytes }, null),

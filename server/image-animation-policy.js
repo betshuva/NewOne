@@ -1,6 +1,51 @@
 'use strict';
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const ANIMATION_SAMPLE_LIMIT = 20;
+const DEFAULT_FRAME_DELAY_MS = 100;
+
+function sampleAnimationFrames(metadata) {
+  const frameCount = Number(metadata?.pages ?? 1);
+  if (!Number.isSafeInteger(frameCount) || frameCount < 1)
+    throw new RangeError('Invalid animation frame count');
+  const delays = Array.isArray(metadata?.delay) ? metadata.delay.slice(0, frameCount) : [];
+  const ends = [];
+  let knownDuration = 0;
+  for (const delay of delays) {
+    // Missing, zero and malformed delays use a normal short frame duration.
+    // Bound representability so malformed finite values cannot overflow time.
+    knownDuration += typeof delay === 'number' && Number.isFinite(delay) &&
+      delay > 0 && delay <= Number.MAX_SAFE_INTEGER / frameCount
+      ? delay : DEFAULT_FRAME_DELAY_MS;
+    ends.push(knownDuration);
+  }
+  const totalDuration = knownDuration + (frameCount - delays.length) * DEFAULT_FRAME_DELAY_MS;
+  const startTime = frameIndex => frameIndex < delays.length
+    ? (frameIndex === 0 ? 0 : ends[frameIndex - 1])
+    : knownDuration + (frameIndex - delays.length) * DEFAULT_FRAME_DELAY_MS;
+  if (frameCount <= ANIMATION_SAMPLE_LIMIT) {
+    return Array.from({ length: frameCount }, (_, frameIndex) =>
+      ({ frameIndex, timeSeconds: startTime(frameIndex) / 1000 }));
+  }
+
+  const selected = new Set([0]);
+  for (let sample = 1; sample < ANIMATION_SAMPLE_LIMIT - 1; sample++) {
+    const time = totalDuration * sample / (ANIMATION_SAMPLE_LIMIT - 1);
+    let low = 0, high = ends.length;
+    // At a presentation boundary choose the newly displayed frame.
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (ends[middle] <= time) low = middle + 1;
+      else high = middle;
+    }
+    const frameIndex = low < ends.length ? low : delays.length +
+      Math.floor((time - knownDuration) / DEFAULT_FRAME_DELAY_MS);
+    selected.add(Math.min(frameCount - 1, frameIndex));
+  }
+  selected.add(frameCount - 1);
+  return [...selected].sort((a, b) => a - b).map(frameIndex =>
+    ({ frameIndex, timeSeconds: startTime(frameIndex) / 1000 }));
+}
 
 function potentialAnimationFormat(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 12) return null;
@@ -52,4 +97,5 @@ function mergedFrameClassification(results) {
   };
 }
 
-module.exports = { potentialAnimationFormat, mergedFrameClassification };
+module.exports = { potentialAnimationFormat, mergedFrameClassification,
+  sampleAnimationFrames, ANIMATION_SAMPLE_LIMIT };

@@ -2,14 +2,27 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const { createRequire } = require('node:module');
+
+// Test the production generator without provider-usage writes, even when a
+// developer shell has a database configured. Every AI response is a fixture.
+const filename = require.resolve('../server/safe-information-ai');
+const localRequire = createRequire(filename);
+const safeInformationModule = { exports: {} };
+vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
+  module: safeInformationModule, console, process, performance, AbortSignal, URL, Buffer,
+  require: name => name === './provider-usage-log'
+    ? { recordProviderCall: async () => {} } : localRequire(name),
+});
 
 const {
   generateSafeInformationAnswer,
   localSafetyReply,
   redactSensitiveInput,
   safeCitationUrls,
-  TEEN_SEARCH_DOMAINS,
-} = require('../server/safe-information-ai');
+} = safeInformationModule.exports;
 
 function providerResponse(text, { annotations = [], webSearched = false, sources = [] } = {}) {
   return { ok: true, json: async () => ({
@@ -30,15 +43,48 @@ function annotatedResponse(claim, url = 'https://www.gov.il/test') {
   }] });
 }
 
-test('halachic questions are referred to a rabbi without a provider call', async () => {
-  let called = false;
-  const answer = await generateSafeInformationAnswer({
-    apiKey: 'test', question: 'האם מותר לנסוע בשבת?',
-    fetchImpl: async () => { called = true; },
+for (const [topic, question] of [
+  ['Torah study', 'למד אותי הלכות שבת'],
+  ['practical halachic questions', 'האם מותר לנסוע בשבת?'],
+  ['medical questions', 'מה המשמעות של לחץ דם גבוה?'],
+  ['financial questions', 'איך בוחרים השקעה שמתאימה לי?'],
+]) {
+  test(`${topic} reach the provider instead of a local topic refusal`, async () => {
+    let calls = 0;
+    const reply = `תשובת ספק בנושא ${topic}.`;
+    const answer = await generateSafeInformationAnswer({
+      apiKey: 'test', question,
+      fetchImpl: async (_, options) => {
+        calls++;
+        const body = JSON.parse(options.body);
+        assert.ok(body.input.some(item => item.role === 'user' && item.content === question));
+        assert.doesNotMatch(body.instructions,
+          /אל תעסוק בפסיקת הלכה|השירות אינו פוסק|אל תאבחן|אל תשנה תרופה|אל תיתן ייעוץ השקעות/);
+        return providerResponse(reply);
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(localSafetyReply(question), null);
+    assert.equal(answer, reply);
   });
-  assert.equal(called, false);
-  assert.match(answer, /לשאול רב/);
-});
+}
+
+for (const [description, question, expected] of [
+  ['medical emergency', 'יש לו כאב חזק בחזה', /מד״א 101/],
+  ['suicide risk', 'אני רוצה להתאבד', /חירום|אל תישאר לבד/],
+  ['password disclosure', 'הסיסמה שלי היא FictionalSecret-Zebra', /אין לשלוח/],
+  ['verification codes', 'אשלח לך קוד אימות', /אין לשלוח/],
+]) {
+  test(`${description} stops before any provider or source request`, async () => {
+    const answer = await generateSafeInformationAnswer({
+      apiKey: 'test', question,
+      fetchImpl: async () => assert.fail('Local safety must not call the provider'),
+      validateSource: async () => assert.fail('Local safety must not fetch a source'),
+    });
+    assert.match(answer, expected);
+    assert.doesNotMatch(answer, /FictionalSecret-Zebra/);
+  });
+}
 
 test('emergency and secret questions stop locally', () => {
   assert.match(localSafetyReply('יש לו כאב חזק בחזה'), /מד״א 101/);
@@ -70,7 +116,8 @@ test('only unique HTTPS citations without credentials or blocked source domains 
       { type: 'url_citation', title: 'רשת חברתית', url: 'https://www.facebook.com/test' },
     ],
   }] }] });
-  assert.deepEqual(citations, [{ title: 'משרד ממשלתי', url: 'https://www.gov.il/test' }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(citations)),
+    [{ title: 'משרד ממשלתי', url: 'https://www.gov.il/test' }]);
 });
 
 test('explicit internet searches enable live web search and force it on the first request', async () => {
@@ -157,7 +204,7 @@ test('plain links are accepted when the hosted search lists the same normalized 
   assert.doesNotMatch(answer, /utm_source|לא הצלחתי/);
 });
 
-test('a plain URL absent from consulted sources cannot substantiate researched claims', async () => {
+test('a plain URL absent from consulted sources is removed without withholding the answer', async () => {
   const answer = await generateSafeInformationAnswer({
     apiKey: 'test-key', question: 'חפש באינטרנט מידע על שירות ממשלתי',
     validateSource: async () => assert.fail('an invented page must not reach source validation'),
@@ -166,11 +213,11 @@ test('a plain URL absent from consulted sources cannot substantiate researched c
       sources: [{ type: 'url', title: 'משרד ממשלתי', url: 'https://www.gov.il/test' }],
     }),
   });
-  assert.match(answer, /לא הצלחתי לאמת/);
-  assert.doesNotMatch(answer, /UNVERIFIED_CLAIM|https:/);
+  assert.match(answer, /UNVERIFIED_CLAIM/);
+  assert.doesNotMatch(answer, /https:|לא הצלחתי לאמת/);
 });
 
-test('mixed eligible and blocked citation annotations withhold the researched answer', async () => {
+test('mixed eligible and blocked citations keep the answer and only the permitted clickable source', async () => {
   const validated = [];
   const answer = await generateSafeInformationAnswer({
     apiKey: 'test-key', question: 'חפש באינטרנט מידע כללי',
@@ -184,8 +231,9 @@ test('mixed eligible and blocked citation annotations withhold the researched an
     }),
   });
   assert.deepEqual(validated, ['https://www.gov.il/test']);
-  assert.match(answer, /לא הצלחתי לאמת/);
-  assert.doesNotMatch(answer, /MIXED_UNVERIFIED_CLAIM|https:/);
+  assert.match(answer, /MIXED_UNVERIFIED_CLAIM/);
+  assert.ok(answer.includes('https://www.gov.il/test'));
+  assert.doesNotMatch(answer, /facebook|לא הצלחתי לאמת/);
 });
 
 for (const [description, validateSource] of [
@@ -193,17 +241,19 @@ for (const [description, validateSource] of [
   ['source validation throws', async () => { throw new Error('source unavailable'); }],
   ['source validation is unavailable', undefined],
 ]) {
-  test(`researched claims are withheld when ${description}`, async () => {
+  test(`researched answer text remains available when ${description}`, async () => {
     const answer = await generateSafeInformationAnswer({
       apiKey: 'test-key', question: 'חפש באינטרנט מידע על התחבורה', validateSource,
       fetchImpl: async () => annotatedResponse('UNVERIFIED_CLAIM מחיר הנסיעה הוא 50 שקלים.'),
     });
-    assert.match(answer, /לא הצלחתי לאמת/);
-    assert.doesNotMatch(answer, /UNVERIFIED_CLAIM|50|https:/);
+    assert.match(answer, /UNVERIFIED_CLAIM מחיר הנסיעה הוא 50 שקלים/);
+    assert.doesNotMatch(answer, /לא הצלחתי לאמת/);
+    if (validateSource) assert.doesNotMatch(answer, /https:/);
+    else assert.ok(answer.includes('https://www.gov.il/test'));
   });
 }
 
-test('web search without an eligible citation returns safe unavailable text', async () => {
+test('web search without an eligible citation keeps the answer and removes prohibited links', async () => {
   for (const annotations of [[], [{
     type: 'url_citation', title: 'רשת חברתית', url: 'https://www.facebook.com/test',
   }]]) {
@@ -212,26 +262,70 @@ test('web search without an eligible citation returns safe unavailable text', as
       validateSource: async () => assert.fail('ineligible sources must not be fetched'),
       fetchImpl: async () => providerResponse('UNVERIFIED_CLAIM', { annotations, webSearched: true }),
     });
-    assert.match(answer, /לא הצלחתי לאמת/);
-    assert.doesNotMatch(answer, /UNVERIFIED_CLAIM/);
+    assert.equal(answer, 'UNVERIFIED_CLAIM');
+    assert.doesNotMatch(answer, /facebook|https:|לא הצלחתי לאמת/);
   }
 });
 
-test('teen internet search is restricted to allowed domains and exposes no marketplace tool', async () => {
+test('teen bot requests use the same web and marketplace tools as other bot requests', async () => {
   const answer = await generateSafeInformationAnswer({
     apiKey: 'test-key', isTeen: true, question: 'חפש באינטרנט מידע על תחבורה ציבורית',
-    searchMarketplace: async () => assert.fail('teens cannot search marketplace'),
+    searchMarketplace: async () => ({ listings: [] }),
     validateSource: async () => true,
     fetchImpl: async (_, options) => {
       const body = JSON.parse(options.body);
       const webTool = body.tools.find(tool => tool.type === 'web_search');
-      assert.deepEqual(webTool.filters.allowed_domains, TEEN_SEARCH_DOMAINS);
-      assert.ok(webTool.filters.allowed_domains.includes('gov.il'));
-      assert.ok(!body.tools.some(tool => tool.name === 'search_marketplace'));
+      assert.equal(webTool.filters?.allowed_domains, undefined);
+      assert.ok(body.tools.some(tool => tool.name === 'search_marketplace'));
+      assert.doesNotMatch(body.instructions, /המשתמש הוא קטין|החמר את ההגנה|אל תפתח נושאים רפואיים או פיננסיים/);
       return annotatedResponse('מידע רשמי על התחבורה.');
     },
   });
   assert.match(answer, /https:\/\/www\.gov\.il\/test/);
+});
+
+test('remaining content restrictions are included in the actual provider instructions', async () => {
+  const answer = await generateSafeInformationAnswer({
+    apiKey: 'test-key', question: 'איך פועלת תחבורה ציבורית?',
+    fetchImpl: async (_, options) => {
+      const instructions = JSON.parse(options.body).instructions;
+      for (const restriction of ['תוכן מיני', 'היכרויות', 'הימורים', 'רכילות', 'אלימות גרפית', 'רשתות חברתיות'])
+        assert.ok(instructions.includes(restriction), `Missing retained restriction: ${restriction}`);
+      return providerResponse('מידע כללי על התחבורה.');
+    },
+  });
+  assert.equal(answer, 'מידע כללי על התחבורה.');
+});
+
+test('presentation keeps a permitted clickable source while stripping a social source independently', async () => {
+  const marker1 = 'citeallowed';
+  const marker2 = 'citeblocked';
+  const prefix = '## מידע שימושי\nפרט ראשון. ';
+  const middle = '\nפרט שני. ';
+  const text = `${prefix}${marker1}${middle}${marker2}`;
+  const secondStart = prefix.length + marker1.length + middle.length;
+  const validated = [];
+  const result = await generateSafeInformationAnswer({
+    apiKey: 'test-key', includePresentation: true, question: 'חפש באינטרנט מידע כללי',
+    validateSource: async url => { validated.push(url); return true; },
+    fetchImpl: async () => providerResponse(text, { webSearched: true, annotations: [
+      { type: 'url_citation', title: 'משרד ממשלתי', url: 'https://www.gov.il/test',
+        start_index: prefix.length, end_index: prefix.length + marker1.length },
+      { type: 'url_citation', title: 'רשת חברתית', url: 'https://www.facebook.com/test',
+        start_index: secondStart, end_index: text.length },
+    ] }),
+  });
+  assert.deepEqual(validated, ['https://www.gov.il/test']);
+  assert.equal(typeof result, 'object');
+  assert.match(result.answer, /פרט ראשון/);
+  assert.match(result.answer, /פרט שני/);
+  assert.ok(result.answer.includes('https://www.gov.il/test'));
+  assert.doesNotMatch(result.answer, /facebook|||לא הצלחתי לאמת/);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.aiPresentation.citations)), [
+    { index: 1, title: 'משרד ממשלתי', url: 'https://www.gov.il/test' },
+  ]);
+  for (const reference of result.aiPresentation.references)
+    assert.equal(result.answer.slice(reference.startIndex, reference.endIndex), 'https://www.gov.il/test');
 });
 
 test('blocked historical secrets and stale external claims are omitted before the provider', async () => {

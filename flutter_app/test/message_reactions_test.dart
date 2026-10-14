@@ -278,8 +278,15 @@ void main() {
     for (final id in [1, 150]) {
       final image = find.byKey(ValueKey('inline-custom-emoji-$id'));
       expect(image, findsOneWidget);
-      expect(tester.getSize(image).width, closeTo(20, .001));
-      expect(tester.getSize(image).height, closeTo(20 * inlineEmojiScale, .001));
+      final artwork = tester.getRect(image);
+      expect(artwork.width, closeTo(24.2, .001));
+      expect(artwork.height, closeTo(24.2, .001));
+      final chip = tester.getRect(
+          find.ancestor(of: image, matching: find.byType(ActionChip)));
+      expect(artwork.left, greaterThanOrEqualTo(chip.left));
+      expect(artwork.right, lessThanOrEqualTo(chip.right));
+      expect(artwork.top, greaterThanOrEqualTo(chip.top));
+      expect(artwork.bottom, lessThanOrEqualTo(chip.bottom));
       final url = (tester.widget<Image>(image).image as NetworkImage).url;
       expect(url,
           'https://betshuva.com/betshuva-app/api/expressions/emoji/$id');

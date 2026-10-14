@@ -8,7 +8,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'server', 'personal-drive.js'), 'utf8');
 
-function fixture(fetchImpl) {
+function fixture(fetchImpl, checkpointDownload) {
   let now = 0;
   const timers = [], timeoutCalls = [], requests = [];
   const clock = {
@@ -37,6 +37,8 @@ function fixture(fetchImpl) {
     require(name) {
       if (name === 'google-auth-library') return { OAuth2Client: FakeOAuth2Client };
       if (name === 'crypto') return require('node:crypto');
+      if (name === './drive-download-checkpoint' && checkpointDownload)
+        return { downloadCheckpointed: checkpointDownload };
       throw new Error(`Unexpected dependency: ${name}`);
     },
     AbortSignal: {
@@ -54,6 +56,32 @@ function fixture(fetchImpl) {
   }, { filename: 'personal-drive.js' });
   return { download: module.exports.downloadAppDataFile, timeoutCalls, requests };
 }
+
+test('large files opt into checkpointed downloads with explicit ownership and checksum bounds', async () => {
+  const opts = { checkpointRoot: '/fixture-only', ownerKey: 'owner',
+    expectedBytes: 128 * 1024 * 1024, expectedSha256: 'a'.repeat(64) };
+  let forwarded;
+  const bytes = Buffer.from('checkpoint result');
+  const f = fixture(() => assert.fail('opted-in download must use its checkpoint helper'),
+    async input => { forwarded = input; return bytes; });
+  assert.deepEqual(await f.download('fake-refresh-token', 'file', opts.expectedBytes + 1024, opts), bytes);
+  assert.equal(forwarded.fileId, 'file');
+  assert.equal(forwarded.maxBytes, opts.expectedBytes + 1024);
+  for (const name of Object.keys(opts)) assert.equal(forwarded[name], opts[name]);
+  assert.equal(forwarded.client.credentials.refresh_token, 'fake-refresh-token');
+  assert.equal(f.requests.length, 0);
+});
+
+test('small files preserve the legacy download path even when checkpoint options are supplied', async () => {
+  const bytes = Buffer.from('small manifest');
+  const f = fixture(async () => response({ bytes }),
+    () => assert.fail('small files must not create a checkpoint'));
+  assert.deepEqual(await f.download('fake-refresh-token', 'file', 1024,
+    { checkpointRoot: '/fixture-only', ownerKey: 'owner', expectedBytes: bytes.length,
+      expectedSha256: 'a'.repeat(64) }), bytes);
+  assert.deepEqual(f.timeoutCalls, [180000]);
+  assert.equal(f.requests.length, 1);
+});
 
 function response({ bytes = Buffer.alloc(0), declared, status = 200, read } = {}) {
   return {

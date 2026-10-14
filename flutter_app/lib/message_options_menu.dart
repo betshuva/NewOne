@@ -1,3 +1,4 @@
+import 'chat_design_settings.dart';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -13,6 +14,14 @@ Future<void> showMessageOptionsMenu({
   required Map<String, dynamic> message,
   required List<Widget> items,
 }) async {
+  final design = ChatDesignStore.shared.value;
+  final presentation = design.choice('messageMenuPresentation', 'auto');
+  final orderedItems = design.orderedItems(
+      'messageMenuOrder',
+      items,
+      (item) => item is CompactMessageMenuItem && item.title is Text
+          ? (item.title as Text).data ?? ''
+          : '');
   final overlay =
       Navigator.of(context).overlay!.context.findRenderObject()! as RenderBox;
   final box = anchorContext?.findRenderObject();
@@ -24,9 +33,9 @@ Future<void> showMessageOptionsMenu({
   final selected = await showGeneralDialog<String>(
     context: context,
     useRootNavigator: false,
-    barrierDismissible: true,
+    barrierDismissible: design.flag('messageMenuDismissOnOutsideTap'),
     barrierLabel: 'סגור אפשרויות הודעה',
-    barrierColor: Colors.transparent,
+    barrierColor: presentation == 'auto' ? Colors.transparent : Colors.black26,
     transitionDuration: const Duration(milliseconds: 100),
     pageBuilder: (menuContext, _, __) => Directionality(
       textDirection: TextDirection.rtl,
@@ -35,7 +44,14 @@ Future<void> showMessageOptionsMenu({
             anchor,
             MediaQuery.of(menuContext).padding,
             MediaQuery.of(menuContext).viewInsets.bottom,
-            canReactToMessage(message) ? 246 : 208),
+            presentation == 'sheet'
+                ? 450
+                : presentation == 'dialog'
+                    ? 320
+                    : canReactToMessage(message)
+                        ? 246
+                        : 208,
+            presentation),
         child: Material(
           key: const ValueKey('message-options-menu'),
           elevation: 8,
@@ -59,7 +75,7 @@ Future<void> showMessageOptionsMenu({
                     }),
                 const Divider(height: 5),
               ],
-              ...items,
+              ...orderedItems,
             ]),
           ),
         ),
@@ -174,7 +190,9 @@ class CompactMessageMenuItem extends StatelessWidget {
 
 class _MessageMenuLayout extends SingleChildLayoutDelegate {
   const _MessageMenuLayout(
-      this.anchor, this.padding, this.keyboard, this.desiredWidth);
+      this.anchor, this.padding, this.keyboard, this.desiredWidth,
+      [this.presentation = 'auto']);
+  final String presentation;
   final Rect anchor;
   final EdgeInsets padding;
   final double keyboard;
@@ -192,19 +210,30 @@ class _MessageMenuLayout extends SingleChildLayoutDelegate {
   }
 
   @override
-  Offset getPositionForChild(Size size, Size childSize) => Offset(
+  Offset getPositionForChild(Size size, Size childSize) {
+    if (presentation != 'auto') {
+      return Offset(
+          (size.width - childSize.width) / 2,
+          presentation == 'sheet'
+              ? math.max(top, bottom(size.height) - childSize.height)
+              : top +
+                  math.max(
+                      0, (bottom(size.height) - top - childSize.height) / 2));
+    }
+    return Offset(
         (anchor.left - childSize.width - 4).clamp(
             padding.left + 6,
             math.max(padding.left + 6,
                 size.width - padding.right - childSize.width - 6)),
         anchor.top
-            .clamp(top, math.max(top, bottom(size.height) - childSize.height)),
-      );
+            .clamp(top, math.max(top, bottom(size.height) - childSize.height)));
+  }
 
   @override
   bool shouldRelayout(_MessageMenuLayout oldDelegate) =>
       anchor != oldDelegate.anchor ||
       padding != oldDelegate.padding ||
       keyboard != oldDelegate.keyboard ||
-      desiredWidth != oldDelegate.desiredWidth;
+      desiredWidth != oldDelegate.desiredWidth ||
+      presentation != oldDelegate.presentation;
 }

@@ -70,20 +70,22 @@ test('optional presentation retains only verified citations and final UTF-16 ref
   assert.deepEqual(validated, [sources[0].url, sources[1].url, sources[0].url, sources[1].url]);
 });
 
-test('no-web, local safety, validation refusal and listing replies expose no presentation or external cards', async () => {
+test('no-web, local emergency, rejected-link and listing replies expose no external cards', async () => {
   const run = generator();
   const noWeb = await run({ apiKey: 'fake', includePresentation: true, question: 'מהו מידע כללי?',
     fetchImpl: async () => provider('## מידע כללי\n**הסבר**', [], false) });
   assert.equal(typeof noWeb, 'string');
-  const local = await run({ apiKey: 'fake', includePresentation: true, question: 'מותר לנסוע בשבת?',
+  const local = await run({ apiKey: 'fake', includePresentation: true, question: 'יש לו כאב חזק בחזה',
     fetchImpl: async () => assert.fail('Local policies must not call AI') });
   assert.equal(typeof local, 'string');
-  assert.match(local, /לשאול רב/);
+  assert.match(local, /מד״א 101/);
   const data = annotatedText();
   const rejected = await run({ apiKey: 'fake', includePresentation: true, question: 'חפש באינטרנט מידע כללי',
     validateSource: async () => false, fetchImpl: async () => provider(data.text, data.annotations) });
   assert.equal(typeof rejected, 'string');
-  assert.doesNotMatch(rejected, /https:|מידע מאומת/);
+  assert.match(rejected, /## מידע מאומת/);
+  assert.match(rejected, /\*\*חשוב\*\*/);
+  assert.doesNotMatch(rejected, /https:|cite/);
   const listing = await run({ apiKey: 'fake', includePresentation: true, question: 'חפש מודעות למקרר',
     validateSource: async () => true, fetchImpl: async (_, request) => {
       assert.doesNotMatch(JSON.parse(request.body).instructions, /עצב מידע כללי ב-Markdown/);
@@ -91,6 +93,54 @@ test('no-web, local safety, validation refusal and listing replies expose no pre
     } });
   assert.equal(typeof listing, 'string');
   assert.doesNotMatch(listing, /https:/);
+});
+
+test('tool citations stay clickable when the optional validator is absent', async () => {
+  const run = generator(), data = annotatedText();
+  const result = await run({ apiKey: 'fake', includePresentation: true,
+    question: 'חפש באינטרנט מידע כללי',
+    fetchImpl: async () => provider(data.text, data.annotations) });
+  assert.match(result.answer, /## מידע מאומת/);
+  assert.deepEqual(result.aiPresentation.citations,
+    sources.map((source, index) => ({ index: index + 1, ...source })));
+  assert.equal(result.aiPresentation.references.length, 3);
+});
+
+for (const [name, reject] of [
+  ['rejects', async () => false],
+  ['throws', async () => { throw new Error('synthetic validation unavailable'); }],
+]) {
+  test(`one source validator ${name} without hiding prose or the surviving citation`, async () => {
+    const run = generator(), data = annotatedText(), checked = [];
+    const result = await run({ apiKey: 'fake', includePresentation: true,
+      question: 'חפש באינטרנט מידע כללי',
+      validateSource: async url => {
+        checked.push(url);
+        return url === sources[0].url ? true : reject();
+      },
+      fetchImpl: async () => provider(data.text, data.annotations) });
+    assert.match(result.answer, /## מידע מאומת/);
+    assert.match(result.answer, /\*\*חשוב\*\*/);
+    assert.equal(result.answer.split('- פרט נוסף').length - 1, 3);
+    assert.ok(!result.answer.includes(sources[1].url));
+    assert.deepEqual(checked, sources.map(source => source.url));
+    assert.deepEqual(result.aiPresentation.citations, [{ index: 1, ...sources[0] }]);
+    assert.deepEqual(result.aiPresentation.references.map(reference => reference.index), [1, 1]);
+  });
+}
+
+test('blocked social and credential citations disappear while educational prose remains', async () => {
+  const run = generator();
+  const forbidden = ['https://www.facebook.com/source', 'https://user:password@example.test/source'];
+  const text = `## לימוד כללי\nהסבר מפורט. ${forbidden.join(' ')} citeblocked`;
+  const annotations = forbidden.map(url => ({ type: 'url_citation', url, title: 'מקור חסום' }));
+  const result = await run({ apiKey: 'fake', includePresentation: true,
+    question: 'תן לי הלכה אחת מפורטת מהלכות שבת',
+    validateSource: async () => assert.fail('blocked URLs must not reach source validation'),
+    fetchImpl: async () => provider(text, annotations, true, forbidden.map(url => ({ url }))) });
+  assert.equal(typeof result, 'string');
+  assert.match(result, /## לימוד כללי\nהסבר מפורט/);
+  assert.doesNotMatch(result, /https:|facebook|password|מקור חסום|cite/);
 });
 
 test('presentation deduplicates five sources, handles punctuation and never uses supplied provider offsets', () => {
@@ -136,7 +186,7 @@ test('actual exchange stores encrypted metadata and recomputes references after 
   assert.equal(fallbackWrites[1][5], null);
 });
 
-test('official information wrapper requests the optional presentation without changing history or audience scope', async () => {
+test('official information wrapper requests presentation and history without bot audience filtering', async () => {
   const start = server.indexOf('async function generateSafeInformationSystemAnswer(');
   const end = server.indexOf('const GROUP_FILTER_ACTIONS', start);
   let requested;
@@ -146,11 +196,13 @@ test('official information wrapper requests the optional presentation without ch
     messageAfterConversationClear: () => 'TRUE',
     generateSafeInformationAnswer: async options => { requested = options; return result; }, console,
   });
-  const pool = { query: async sql => ({ rows: sql.includes('birth_date') ? [{ is_teen: false }] : [] }) };
+  const queries = [];
+  const pool = { query: async sql => { queries.push(sql); return { rows: [] }; } };
   assert.equal(await wrapper(pool, USER, 'שאלה'), result);
   assert.equal(requested.includePresentation, true);
   assert.equal(requested.userId, USER);
-  assert.equal(requested.isTeen, false);
+  assert.equal(Object.hasOwn(requested, 'isTeen'), false);
+  assert.ok(queries.every(sql => !/birth_date/.test(sql)));
   assert.equal(requested.history.length, 0);
 });
 

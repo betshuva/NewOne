@@ -1,3 +1,4 @@
+import 'package:betshuva/upload_scan_details.dart';
 import 'dart:convert';
 
 import 'package:betshuva/main.dart' show ChatScreen, GroupChatScreen;
@@ -34,19 +35,29 @@ const _allowed = {
   'children': true,
 };
 
-Map<String, dynamic> _message({bool stopped = false, bool redacted = true,
-    String fileType = 'video', String? reasonCode,
-    String reasonCodeField = 'scan_reason_code'}) => {
+Map<String, dynamic> _message(
+        {bool stopped = false,
+        bool redacted = true,
+        String fileType = 'video',
+        String? reasonCode,
+        String reasonCodeField = 'scan_reason_code'}) =>
+    {
       'id': _id,
       'sender_id': 'viewer',
       'sender_name': 'Viewer',
       'type': fileType,
-      'file_url': redacted ? null : fileType == 'video'
-          ? _url : 'https://example.test/stopped-image.png',
-      'file_name': redacted ? null : fileType == 'video'
-          ? 'stopped-video.mp4' : 'stopped-image.png',
-      'scan_file_name': fileType == 'video'
-          ? 'stopped-video.mp4' : 'stopped-image.png',
+      'file_url': redacted
+          ? null
+          : fileType == 'video'
+              ? _url
+              : 'https://example.test/stopped-image.png',
+      'file_name': redacted
+          ? null
+          : fileType == 'video'
+              ? 'stopped-video.mp4'
+              : 'stopped-image.png',
+      'scan_file_name':
+          fileType == 'video' ? 'stopped-video.mp4' : 'stopped-image.png',
       'filter_hidden': redacted,
       'hidden_reason': redacted ? 'moderation' : null,
       'message_status': 'pending_scan',
@@ -175,7 +186,10 @@ Future<void> _unmount(WidgetTester tester) async {
 void _expectStopped() {
   expect(find.byKey(const ValueKey('scan-stopped-$_id')), findsOneWidget);
   expect(find.text('הסירטון נחסם'), findsWidgets);
-  expect(find.text('stopped-video.mp4'), findsOneWidget);
+  expect(
+      find.byWidgetPredicate(
+          (w) => w is Tooltip && w.message == 'stopped-video.mp4'),
+      findsOneWidget);
   expect(find.text('הקובץ לא נשלח'), findsNothing);
   expect(find.text('התמונה מוצגת רק לך ולא נשלחה'), findsNothing);
   expect(find.textContaining(_reason), findsNothing);
@@ -193,21 +207,23 @@ void main() {
     final scope = group ? 'group' : 'private';
 
     for (final viewport in [const Size(390, 844), const Size(1400, 1100)]) {
-      testWidgets('$scope stopped details fit within ${viewport.width}px viewport',
+      testWidgets(
+          '$scope stopped details fit within ${viewport.width}px viewport',
           (tester) async {
         final server = _Server(group, [_message(stopped: true)]);
         await http.runWithClient(() async {
           await _mount(tester, group, _socket(), viewport: viewport);
           _expectStopped();
           final title = tester.getRect(find.text('הסירטון נחסם'));
-          final filename = tester.getRect(find.text('stopped-video.mp4'));
+          final filename = tester.getRect(find.byWidgetPredicate(
+              (w) => w is Tooltip && w.message == 'stopped-video.mp4'));
           for (final rect in [title, filename]) {
             expect(rect.left, greaterThanOrEqualTo(0));
             expect(rect.right, lessThanOrEqualTo(viewport.width));
             expect(rect.top, greaterThanOrEqualTo(0));
             expect(rect.bottom, lessThanOrEqualTo(viewport.height));
           }
-          expect(filename.bottom, lessThanOrEqualTo(title.top));
+          expect(filename.contains(title.center), isTrue);
           expect(tester.takeException(), isNull);
           await _unmount(tester);
         }, () => MockClient(server.respond));
@@ -215,7 +231,8 @@ void main() {
     }
 
     for (final redacted in [true, false]) {
-      testWidgets('$scope stopped history clears pending display, redacted=$redacted',
+      testWidgets(
+          '$scope stopped history clears pending display, redacted=$redacted',
           (tester) async {
         final row = _message(stopped: true, redacted: redacted);
         if (!redacted) row.remove('scan_stopped');
@@ -236,7 +253,7 @@ void main() {
       await http.runWithClient(() async {
         await _mount(tester, group, socket);
         expect(server.historyReads, 1);
-        expect(find.text('סורק את הווידאו'), findsOneWidget);
+        expect(find.byType(UploadScanDetails), findsOneWidget);
         server.history = [_message(stopped: true)];
         _receiveStopped(socket, group);
         await _pump(tester);
@@ -257,7 +274,7 @@ void main() {
         _receiveStopped(socket, group, otherDestination: true);
         await _pump(tester);
         expect(server.historyReads, 1);
-        expect(find.text('סורק את הווידאו'), findsOneWidget);
+        expect(find.byType(UploadScanDetails), findsOneWidget);
         expect(find.textContaining('הסריקה נעצרה'), findsNothing);
         expect(server.postedMessages, isEmpty);
         await _unmount(tester);
@@ -265,18 +282,21 @@ void main() {
     });
 
     const notices = {
-      'modesty_uncertain': 'לא ניתן לאשר את הקובץ: בדיקת הצניעות לא הוכרעה בוודאות',
+      'modesty_uncertain':
+          'לא ניתן לאשר את הקובץ: בדיקת הצניעות לא הוכרעה בוודאות',
       'provider_unavailable': 'הסריקה לא הושלמה: שירות הבדיקה אינו זמין',
       'provider_error': 'הסריקה לא הושלמה עקב תקלה בשירות הבדיקה',
       'uncertainty_review_limit': 'הסריקה נעצרה: מכסת בדיקות ההשלמה מוצתה',
-      'uncertainty_review_disabled': 'לא ניתן לאשר את הקובץ: בדיקת הסינון לא הושלמה',
+      'uncertainty_review_disabled':
+          'לא ניתן לאשר את הקובץ: בדיקת הסינון לא הושלמה',
       'operation_outcome_unknown': 'הסריקה נעצרה: תוצאת בדיקה קודמת אינה ידועה',
       'budget_exhausted': 'הסריקה נעצרה: מכסת הבדיקות מוצתה',
       'deadline_exceeded': 'הסריקה נעצרה: זמן הבדיקה המרבי הסתיים',
       'untrusted_unknown_code': 'הסירטון נחסם',
     };
     for (final notice in notices.entries) {
-      testWidgets('$scope web stopped notice uses fixed ${notice.key} explanation',
+      testWidgets(
+          '$scope web stopped notice uses fixed ${notice.key} explanation',
           (tester) async {
         final server = _Server(group, [_message()]);
         final socket = _socket();
@@ -287,8 +307,10 @@ void main() {
               reasonCode: notice.key,
               reason: 'Gemini private provider response — הסריקה תתבצע שוב');
           await _pump(tester);
-          expect(find.text(kIsWeb ? notice.value : 'הסירטון נחסם'), findsWidgets);
-          expect(find.textContaining('private provider response'), findsNothing);
+          expect(
+              find.text(kIsWeb ? notice.value : 'הסירטון נחסם'), findsWidgets);
+          expect(
+              find.textContaining('private provider response'), findsNothing);
           expect(find.textContaining('Gemini'), findsNothing);
           expect(find.textContaining('תתבצע שוב'), findsNothing);
           expect(server.postedMessages, isEmpty);
@@ -299,32 +321,47 @@ void main() {
     }
 
     const imageNotices = {
-      'modesty_uncertain': 'לא ניתן לאשר את הקובץ: בדיקת הצניעות לא הוכרעה בוודאות',
+      'modesty_uncertain':
+          'לא ניתן לאשר את הקובץ: בדיקת הצניעות לא הוכרעה בוודאות',
       'provider_error': 'הסריקה לא הושלמה עקב תקלה בשירות הבדיקה',
       'untrusted_unknown_code': 'הסריקה נעצרה והקובץ לא נשלח',
     };
     for (final notice in imageNotices.entries) {
-      testWidgets('$scope stopped image history displays safe ${notice.key} notice',
+      testWidgets(
+          '$scope stopped image history displays safe ${notice.key} notice',
           (tester) async {
-        final row = _message(stopped: true, fileType: 'image',
+        final row = _message(
+            stopped: true,
+            fileType: 'image',
             reasonCode: notice.key,
             reasonCodeField: notice.key == 'provider_error'
-                ? 'reasonCode' : 'scan_reason_code');
-        row['scan_reason'] = 'Gemini private provider response — הסריקה תתבצע שוב';
+                ? 'reasonCode'
+                : 'scan_reason_code');
+        row['scan_reason'] =
+            'Gemini private provider response — הסריקה תתבצע שוב';
         final server = _Server(group, [row]);
         await http.runWithClient(() async {
-          await _mount(tester, group, _socket(), viewport: const Size(390, 844));
-          expect(find.byKey(const ValueKey('scan-stopped-$_id')), findsOneWidget);
+          await _mount(tester, group, _socket(),
+              viewport: const Size(390, 844));
+          expect(
+              find.byKey(const ValueKey('scan-stopped-$_id')), findsOneWidget);
           final label = find.text(kIsWeb ? notice.value : 'הסירטון נחסם');
           expect(label, findsOneWidget);
-          expect(find.text('stopped-image.png'), findsOneWidget);
-          for (final rect in [tester.getRect(label),
-            tester.getRect(find.text('stopped-image.png'))]) {
+          expect(
+              find.byWidgetPredicate(
+                  (w) => w is Tooltip && w.message == 'stopped-image.png'),
+              findsOneWidget);
+          for (final rect in [
+            tester.getRect(label),
+            tester.getRect(find.byWidgetPredicate(
+                (w) => w is Tooltip && w.message == 'stopped-image.png'))
+          ]) {
             expect(rect.left, greaterThanOrEqualTo(0));
             expect(rect.right, lessThanOrEqualTo(390));
           }
           expect(find.textContaining('Gemini'), findsNothing);
-          expect(find.textContaining('private provider response'), findsNothing);
+          expect(
+              find.textContaining('private provider response'), findsNothing);
           expect(find.textContaining('תתבצע שוב'), findsNothing);
           expect(find.text('הקובץ ממתין לסריקה ולאישור'), findsNothing);
           expect(find.text('התמונה מוצגת רק לך ולא נשלחה'), findsNothing);

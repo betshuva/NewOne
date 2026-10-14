@@ -7,8 +7,7 @@ import 'package:betshuva/location_message_preview.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
-import 'package:flutter/foundation.dart'
-    show kIsWeb, TargetPlatform;
+import 'package:flutter/foundation.dart' show kIsWeb, TargetPlatform;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -30,6 +29,35 @@ final _keyboardWavBytes = base64Decode(
 final _pngBytes = base64Decode(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH9sAAAAASUVORK5CYII=');
 final _labels = List.generate(150, (index) => 'אימוג׳י לבדיקה ${index + 1}');
+const _creamContrastLabels = [
+  'שמחה',
+  'צחוק',
+  'חיוך',
+  'קריצה',
+  'נשיקה',
+  'שלווה',
+  'אהבה',
+  'התרגשות',
+  'עיניים נוצצות',
+  'הפתעה',
+  'ספק',
+  'מחשבה',
+  'רוגע',
+  'דאגה',
+  'בכי',
+  'תסכול',
+];
+const _newLibraryEmojiVariants = ['קרם', 'ירוק בהיר', 'ירוק חזק'];
+final _newLibraryEmojiItems = List.generate(
+    48,
+    (index) => {
+          'id': 'user-emojis-${167 + index}',
+          'emojiId': 167 + index,
+          'label': '${_creamContrastLabels[index % 16]} — '
+              '${_newLibraryEmojiVariants[index ~/ 16]}',
+          'url': '/betshuva-app/api/expressions/emoji/${167 + index}',
+          'animated': false,
+        });
 var _bundledCatalogReads = 0;
 var _keyboardSoundAssetReads = 0;
 final _keyboardAudioCalls = <MethodCall>[];
@@ -120,7 +148,10 @@ class _ChatHarness {
   final bool coloredArtwork;
   final bool removedArtwork;
   final bool splitCatalog;
+  final List<Map<String, dynamic>> extraEmojiItems;
   final bool adminInvites;
+  final bool isGuide;
+  final Future<http.Response> Function()? sendResponse;
   final pendingInviteIds = <String>{'invited-user'};
   int liveEmojiCount = 49;
   int liveStickerCount = 150;
@@ -142,7 +173,10 @@ class _ChatHarness {
       this.coloredArtwork = false,
       this.removedArtwork = false,
       this.splitCatalog = false,
+      this.extraEmojiItems = const [],
       this.adminInvites = false,
+      this.isGuide = false,
+      this.sendResponse,
       this.history});
 
   late final client = MockClient((request) async {
@@ -160,6 +194,7 @@ class _ChatHarness {
           uploadStatus,
           headers: {'content-type': 'application/json; charset=utf-8'});
     } else if (request.method == 'POST' && path.endsWith('/messages')) {
+      if (sendResponse != null) return sendResponse!();
       body = {'id': 'emoji-sent-message', 'status': 'sent'};
     } else if (path.endsWith('/expressions/catalog')) {
       final catalog = _catalog;
@@ -206,6 +241,15 @@ class _ChatHarness {
           }
         }
       }
+      if (extraEmojiItems.isNotEmpty) {
+        final emojiCategory = (catalog['categories'] as List)
+            .firstWhere((category) => category['id'] == 'user-emojis') as Map;
+        emojiCategory['items'] = <Map<String, dynamic>>[
+          ...(emojiCategory['items'] as List)
+              .map((item) => Map<String, dynamic>.from(item as Map)),
+          ...extraEmojiItems.map((item) => Map<String, dynamic>.from(item)),
+        ];
+      }
       return http.Response(jsonEncode(catalog), catalogStatus,
           headers: {'content-type': 'application/json; charset=utf-8'});
     } else if (adminInvites && path.endsWith('/users/directory')) {
@@ -214,16 +258,25 @@ class _ChatHarness {
         {'id': 'invited-user', 'name': 'מוזמן קודם'},
         {'id': 'new-invite-user', 'name': 'משתמש חדש'},
       ];
-    } else if (adminInvites && request.method == 'POST' && path.endsWith('/members')) {
+    } else if (adminInvites &&
+        request.method == 'POST' &&
+        path.endsWith('/members')) {
       pendingInviteIds.add(jsonDecode(request.body)['userId'] as String);
       body = {'ok': true};
     } else if (path.endsWith('/groups')) {
-      body = [{..._group, if (adminInvites) 'role': 'admin'}];
+      body = [
+        {..._group, if (adminInvites) 'role': 'admin'}
+      ];
     } else if (path.endsWith('/groups/emoji-test-group')) {
       body = <String, dynamic>{
         'members': [
-          {'id': 'emoji-test-user', 'name': 'משתמש לבדיקה', 'role': adminInvites ? 'admin' : 'member'},
-          if (adminInvites) {'id': 'existing-member', 'name': 'חבר קיים', 'role': 'member'},
+          {
+            'id': 'emoji-test-user',
+            'name': 'משתמש לבדיקה',
+            'role': adminInvites ? 'admin' : 'member'
+          },
+          if (adminInvites)
+            {'id': 'existing-member', 'name': 'חבר קיים', 'role': 'member'},
         ],
       };
       if (adminInvites) body['pending_invite_ids'] = pendingInviteIds.toList();
@@ -306,7 +359,8 @@ class _ChatHarness {
       final request = sentHttpMessages.single;
       expect(request.url.path, endsWith('/messages'));
       message = jsonDecode(request.body) as Map<String, dynamic>;
-      expect(message['toUserId'], 'emoji-test-recipient');
+      expect(message['toUserId'],
+          isGuide ? kSystemGuideId : 'emoji-test-recipient');
     }
     expect(message['text'], wireText);
     expect(message['fileType'], isNull);
@@ -356,15 +410,16 @@ class _ChatHarness {
               ? GroupChatScreen(
                   token: 'emoji-test-token',
                   me: const {'id': 'emoji-test-user', 'name': 'משתמש לבדיקה'},
-                  group: Map<String, dynamic>.from({..._group, if (adminInvites) 'role': 'admin'}),
+                  group: Map<String, dynamic>.from(
+                      {..._group, if (adminInvites) 'role': 'admin'}),
                   socket: socket,
                   embedded: true,
                 )
               : ChatScreen(
                   token: 'emoji-test-token',
                   me: const {'id': 'emoji-test-user', 'name': 'משתמש לבדיקה'},
-                  recipient: const {
-                    'id': 'emoji-test-recipient',
+                  recipient: {
+                    'id': isGuide ? kSystemGuideId : 'emoji-test-recipient',
                     'name': 'חבר לבדיקה',
                   },
                   socket: socket,
@@ -461,11 +516,10 @@ Future<void> _openShortcut(WidgetTester tester,
   final composer = find.byType(TextField).first;
   final controller = tester.widget<TextField>(composer).controller!;
   final original = controller.value;
-  final emptyDraft = inlineEmojiPlainText(original.text).trim().isEmpty;
-  if (emptyDraft) controller.text = 'בדיקה';
+  await tester.showKeyboard(composer);
+  controller.value = original;
   await tester.pump();
   await tester.tap(stickers ? _stickerShortcut : _inlineEmojiShortcut);
-  if (emptyDraft) controller.value = original;
   await tester
       .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
   await tester.pumpAndSettle();
@@ -501,6 +555,18 @@ void _expectComposerShortcuts(WidgetTester tester, {bool hasText = true}) {
   }
 }
 
+void _expectComposerKeyboard(WidgetTester tester, _ChatHarness app,
+    {required bool visible}) {
+  expect(tester.widget<TextField>(app.composer).focusNode!.hasFocus, visible);
+  if (!kIsWeb) expect(tester.testTextInput.isVisible, visible);
+}
+
+Future<void> _focusComposer(WidgetTester tester, _ChatHarness app) async {
+  await tester.showKeyboard(app.composer);
+  await tester.pump();
+  _expectComposerKeyboard(tester, app, visible: true);
+}
+
 Finder _imageTile(int id, {bool colored = false}) => find.byKey(ValueKey(
     'expression-image-https://betshuva.com/betshuva-app/expression-library/${colored ? 'user-20261008-color' : 'user-20260907'}/sticker-${id.toString().padLeft(2, '0')}.png'));
 
@@ -522,6 +588,15 @@ Future<void> _selectEmoji(WidgetTester tester, int id,
     }
   } else {
     await tester.pumpAndSettle();
+  }
+  if (sendsSticker) {
+    expect(_picker, findsNothing);
+    final fields = find.byType(TextField);
+    if (fields.evaluate().isNotEmpty) {
+      expect(
+          tester.widget<TextField>(fields.last).focusNode?.hasFocus, isFalse);
+    }
+    return;
   }
   expect(_picker, findsOneWidget);
   if (find.byType(SnackBar).evaluate().isNotEmpty) {
@@ -557,8 +632,8 @@ void _expectSmallEmoji(WidgetTester tester, Finder scope, int id) {
   );
   expect(image, findsOneWidget);
   final size = tester.getSize(image);
-  expect(size.width, inInclusiveRange(19.8, 26.5));
-  expect(size.height, inInclusiveRange(19.8, 26.5));
+  expect(size.width, inInclusiveRange(21.78, 29.15));
+  expect(size.height, inInclusiveRange(21.78, 29.15));
 }
 
 TextSelection _logicalSelection(TextEditingController controller) {
@@ -679,6 +754,163 @@ void main() {
         .setMockMessageHandler('flutter/assets', null);
   });
 
+  for (final isGuide in [false, true]) {
+    final kind = isGuide ? 'IsraelChat' : 'private';
+    for (final status in [200, 400, 422, 503]) {
+      testWidgets(
+        '$kind send button closes the keyboard before deferred HTTP $status',
+        (tester) async {
+          final response = Completer<http.Response>();
+          final started = Completer<void>();
+          final app = _ChatHarness(
+            isGroup: false,
+            isGuide: isGuide,
+            sendResponse: () {
+              started.complete();
+              return response.future;
+            },
+          );
+          await http.runWithClient(() async {
+            await app.mount(tester);
+            await tester.enterText(app.composer, 'הודעה לבדיקה');
+            await _focusComposer(tester, app);
+            await tester.tap(
+              find.byKey(const ValueKey('chat-composer-action')),
+            );
+            await tester.pump();
+            _expectComposerKeyboard(tester, app, visible: false);
+            for (var i = 0; !started.isCompleted && i < 20; i++) {
+              await tester.pump(const Duration(milliseconds: 20));
+            }
+            expect(started.isCompleted, isTrue);
+            expect(response.isCompleted, isFalse);
+            response.complete(
+              http.Response(
+                jsonEncode(
+                  status == 200
+                      ? {'id': 'accepted-text', 'status': 'sent'}
+                      : {
+                          'error': 'השליחה לא אושרה',
+                          if (status == 422) 'code': 'CHAT_CONTENT_BLOCKED',
+                        },
+                ),
+                status,
+                headers: {'content-type': 'application/json; charset=utf-8'},
+              ),
+            );
+            await tester.pumpAndSettle();
+            _expectComposerKeyboard(tester, app, visible: false);
+            await tester.pump(const Duration(seconds: 6));
+            await app.dispose(tester);
+            if (status == 422) await tester.pump(const Duration(minutes: 2));
+          }, () => app.client);
+        },
+      );
+    }
+
+    testWidgets(
+      '$kind send button keeps a new draft focused after deferred HTTP',
+      (tester) async {
+        final response = Completer<http.Response>();
+        final started = Completer<void>();
+        final app = _ChatHarness(
+          isGroup: false,
+          isGuide: isGuide,
+          sendResponse: () {
+            started.complete();
+            return response.future;
+          },
+        );
+        await http.runWithClient(() async {
+          await app.mount(tester);
+          await tester.enterText(app.composer, 'ראשונה');
+          await _focusComposer(tester, app);
+          await tester.tap(find.byKey(const ValueKey('chat-composer-action')));
+          await tester.pump();
+          _expectComposerKeyboard(tester, app, visible: false);
+          for (var i = 0; !started.isCompleted && i < 20; i++) {
+            await tester.pump(const Duration(milliseconds: 20));
+          }
+          expect(started.isCompleted, isTrue);
+          await tester.enterText(app.composer, 'טיוטה חדשה');
+          response.complete(
+            http.Response(jsonEncode({'id': 'accepted-text'}), 200),
+          );
+          await tester.pumpAndSettle();
+          expect(app.controller(tester).text, 'טיוטה חדשה');
+          _expectComposerKeyboard(tester, app, visible: true);
+          await app.dispose(tester);
+        }, () => app.client);
+      },
+    );
+  }
+
+  testWidgets(
+    'group send button closes the keyboard without a socket acknowledgement',
+    (tester) async {
+      final app = _ChatHarness(isGroup: true);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        await tester.enterText(app.composer, 'הודעה בקבוצה');
+        await _focusComposer(tester, app);
+        await tester.tap(find.byKey(const ValueKey('chat-composer-action')));
+        await tester.pump();
+        _expectComposerKeyboard(tester, app, visible: false);
+        await tester.pumpAndSettle();
+        app.expectOneTextMessage('הודעה בקבוצה');
+        _expectComposerKeyboard(tester, app, visible: false);
+        await app.dispose(tester);
+      }, () => app.client);
+    },
+  );
+
+  for (final isGroup in [false, true]) {
+    for (final stickers in [false, true]) {
+      testWidgets(
+        '${isGroup ? 'group' : 'private'} opens ${stickers ? 'stickers' : 'emoji'} before focusing an empty draft',
+        (tester) async {
+          final app = _ChatHarness(isGroup: isGroup);
+          await http.runWithClient(() async {
+            await app.mount(tester);
+            _expectComposerKeyboard(tester, app, visible: false);
+            final shortcut = stickers ? _stickerShortcut : _inlineEmojiShortcut;
+            expect(shortcut, findsOneWidget);
+            await tester.tap(shortcut);
+            await tester.pumpAndSettle();
+            expect(_picker, findsOneWidget);
+            expect(_pickerShowsStickers(tester), stickers);
+            expect(app.controller(tester).text, isEmpty);
+            app.expectNothingSent();
+            await app.dispose(tester);
+          }, () => app.client);
+        },
+      );
+    }
+    testWidgets(
+      '${isGroup ? 'group' : 'private'} compact composer retains multiline input',
+      (tester) async {
+        final app = _ChatHarness(isGroup: isGroup);
+        await http.runWithClient(() async {
+          await app.mount(tester);
+          final field = tester.widget<TextField>(app.composer);
+          expect(field.minLines, 1);
+          expect(field.maxLines, 4);
+          expect(field.textInputAction, TextInputAction.newline);
+          final emptyHeight = tester.getSize(app.composer).height;
+          expect(emptyHeight, lessThanOrEqualTo(42));
+          await tester.enterText(
+            app.composer,
+            'שורה ראשונה\nשורה שנייה\nשורה שלישית',
+          );
+          await tester.pump();
+          expect(tester.getSize(app.composer).height, greaterThan(emptyHeight));
+          expect(app.controller(tester).text, contains('\nשורה שנייה\n'));
+          await app.dispose(tester);
+        }, () => app.client);
+      },
+    );
+  }
+
   testWidgets('web expression picker fills the composer width without labels',
       (tester) async {
     final app = _ChatHarness(isGroup: false);
@@ -712,7 +944,8 @@ void main() {
     final chatKind = isGroup ? 'group' : 'private';
 
     for (final state in ['incoming', 'read', 'failed']) {
-      testWidgets('$chatKind sender header contains time and status once ($state)',
+      testWidgets(
+          '$chatKind sender header contains time and status once ($state)',
           (tester) async {
         tester.view.physicalSize = const Size(320, 740);
         tester.view.devicePixelRatio = 1;
@@ -735,7 +968,9 @@ void main() {
           await app.mount(tester);
           final header = find.byWidgetPredicate((widget) =>
               widget.key is ValueKey &&
-              (widget.key! as ValueKey).value.toString()
+              (widget.key! as ValueKey)
+                  .value
+                  .toString()
                   .startsWith('message-sender-'));
           expect(header, findsOneWidget);
           final time = find.descendant(
@@ -753,10 +988,12 @@ void main() {
               lessThan(tester.getRect(find.text('הודעה קומפקטית')).top));
           expect(find.descendant(of: header, matching: find.text('נערך')),
               isMe ? findsOneWidget : findsNothing);
-          expect(find.descendant(of: header,
-              matching: find.byIcon(state == 'failed'
-                  ? (isGroup ? Icons.error_outline : Icons.done)
-                  : Icons.done_all)),
+          expect(
+              find.descendant(
+                  of: header,
+                  matching: find.byIcon(state == 'failed'
+                      ? (isGroup ? Icons.error_outline : Icons.done)
+                      : Icons.done_all)),
               isMe ? findsOneWidget : findsNothing);
           expect(tester.takeException(), isNull);
           await app.dispose(tester);
@@ -765,25 +1002,32 @@ void main() {
     }
 
     if (isGroup) {
-      testWidgets('group marks prior invitations and refreshes after inviting a new user',
+      testWidgets(
+          'group marks prior invitations and refreshes after inviting a new user',
           (tester) async {
-        final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-        const contactsChannel = MethodChannel('github.com/QuisApp/flutter_contacts');
+        final messenger =
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+        const contactsChannel =
+            MethodChannel('github.com/QuisApp/flutter_contacts');
         messenger.setMockMethodCallHandler(contactsChannel, (_) async => false);
-        addTearDown(() => messenger.setMockMethodCallHandler(contactsChannel, null));
+        addTearDown(
+            () => messenger.setMockMethodCallHandler(contactsChannel, null));
         final app = _ChatHarness(isGroup: true, adminInvites: true);
         await http.runWithClient(() async {
           await app.mount(tester);
-          final menu = tester.widget<PopupMenuButton<String>>(find.byType(PopupMenuButton<String>).first);
+          final menu = tester.widget<PopupMenuButton<String>>(
+              find.byType(PopupMenuButton<String>).first);
           menu.onSelected!('add');
-          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+          await tester.runAsync(
+              () => Future<void>.delayed(const Duration(milliseconds: 100)));
           await tester.pumpAndSettle();
           expect(find.text('כבר חבר בקבוצה'), findsOneWidget);
           expect(find.text('הוזמן – ממתין לאישור'), findsOneWidget);
           for (final name in ['חבר קיים', 'מוזמן קודם']) {
-            final row = find.ancestor(of: find.text(name), matching: find.byType(ListTile));
-            final checkbox = tester.widget<Checkbox>(find.descendant(of: row,
-                matching: find.byType(Checkbox)));
+            final row = find.ancestor(
+                of: find.text(name), matching: find.byType(ListTile));
+            final checkbox = tester.widget<Checkbox>(
+                find.descendant(of: row, matching: find.byType(Checkbox)));
             expect(checkbox.value, isTrue);
             expect(checkbox.onChanged, isNull);
             await tester.tap(find.text(name));
@@ -793,11 +1037,15 @@ void main() {
           await tester.pumpAndSettle();
           await tester.tap(find.text('הוסף 1 נבחרים'));
           await tester.pumpAndSettle();
-          final posts = app.requests.where((r) => r.method == 'POST' && r.url.path.endsWith('/members')).toList();
+          final posts = app.requests
+              .where(
+                  (r) => r.method == 'POST' && r.url.path.endsWith('/members'))
+              .toList();
           expect(posts, hasLength(1));
           expect(jsonDecode(posts.single.body), {'userId': 'new-invite-user'});
           menu.onSelected!('add');
-          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+          await tester.runAsync(
+              () => Future<void>.delayed(const Duration(milliseconds: 100)));
           await tester.pumpAndSettle();
           expect(find.text('הוזמן – ממתין לאישור'), findsNWidgets(2));
           expect(find.text('בחר חברים'), findsOneWidget);
@@ -809,7 +1057,8 @@ void main() {
       });
     }
 
-    testWidgets('$chatKind displays a shared location map instead of the raw URL',
+    testWidgets(
+        '$chatKind displays a shared location map instead of the raw URL',
         (tester) async {
       final url = Uri.https('www.google.com', '/maps/search/',
           {'api': '1', 'query': 'רחובות'}).toString();
@@ -828,10 +1077,14 @@ void main() {
         expect(find.byType(LocationMessagePreview), findsOneWidget);
         expect(find.text('רחובות'), findsOneWidget);
         expect(find.text('www.google.com'), findsNothing);
-        expect(find.byWidgetPredicate((widget) => widget is InlineEmojiText &&
-            widget.text.contains('https://www.google.com')), findsNothing);
+        expect(
+            find.byWidgetPredicate((widget) =>
+                widget is InlineEmojiText &&
+                widget.text.contains('https://www.google.com')),
+            findsNothing);
         await tester.ensureVisible(find.text('רחובות'));
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+        await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 100)));
         await tester.pumpAndSettle();
         await tester.tap(find.text('רחובות'));
         // Web chat also recognizes double-click-to-copy; let its timer expire.
@@ -846,7 +1099,8 @@ void main() {
       }, () => app.client);
     });
 
-    testWidgets('$chatKind removes blank lines without merging content or losing emoji',
+    testWidgets(
+        '$chatKind removes blank lines without merging content or losing emoji',
         (tester) async {
       final app = _ChatHarness(isGroup: isGroup);
       await http.runWithClient(() async {
@@ -863,13 +1117,14 @@ void main() {
     });
 
     for (final stickers in [false, true]) {
-      testWidgets('$chatKind opens ${stickers ? 'stickers' : 'emoji'} with a mouse and an empty draft',
+      testWidgets(
+          '$chatKind opens ${stickers ? 'stickers' : 'emoji'} with a mouse and an empty draft',
           (tester) async {
         final app = _ChatHarness(isGroup: isGroup);
         await http.runWithClient(() async {
           await app.mount(tester);
-          await tester.runAsync(() => Future<void>.delayed(
-              const Duration(milliseconds: 100)));
+          await tester.runAsync(
+              () => Future<void>.delayed(const Duration(milliseconds: 100)));
           await tester.pumpAndSettle();
           await tester.tap(app.composer, kind: PointerDeviceKind.mouse);
           await tester.pumpAndSettle();
@@ -880,16 +1135,19 @@ void main() {
           await tester.pump();
           expect(shortcut, findsOneWidget);
           expect(tester.widget<TextField>(app.composer).focusNode!.hasFocus,
-              isTrue, reason: 'Focus must survive the mouse press on the shortcut');
+              isTrue,
+              reason: 'Focus must survive the mouse press on the shortcut');
           await gesture.up();
-          for (var attempt = 0; _picker.evaluate().isEmpty && attempt < 8;
+          for (var attempt = 0;
+              _picker.evaluate().isEmpty && attempt < 8;
               attempt++) {
-            await tester.runAsync(() => Future<void>.delayed(
-                const Duration(milliseconds: 100)));
+            await tester.runAsync(
+                () => Future<void>.delayed(const Duration(milliseconds: 100)));
             await tester.pumpAndSettle();
           }
           expect(_picker, findsOneWidget,
-              reason: 'panel=${find.byKey(const ValueKey('expression-picker-panel')).evaluate().length}; '
+              reason:
+                  'panel=${find.byKey(const ValueKey('expression-picker-panel')).evaluate().length}; '
                   'requests=${app.requests.map((r) => r.url.path).toList()}');
           expect(_pickerShowsStickers(tester), stickers);
           expect(app.controller(tester).text, isEmpty);
@@ -912,8 +1170,8 @@ void main() {
         final actionRect = tester.getRect(action);
         expect(find.byIcon(Icons.mic), findsOneWidget);
         expect(find.byIcon(Icons.send), findsNothing);
-        expect(_stickerShortcut, findsNothing);
-        expect(_inlineEmojiShortcut, findsNothing);
+        expect(_stickerShortcut, findsOneWidget);
+        expect(_inlineEmojiShortcut, findsOneWidget);
         expect(tester.widget<IconButton>(action).onPressed, isNotNull);
         await tester.tap(app.composer);
         await tester.pump();
@@ -924,28 +1182,28 @@ void main() {
         expect(tester.getRect(tools), toolsRect);
         tester.widget<TextField>(app.composer).focusNode!.unfocus();
         await tester.pump();
-        expect(_stickerShortcut, findsNothing);
-        expect(_inlineEmojiShortcut, findsNothing);
+        expect(_stickerShortcut, findsOneWidget);
+        expect(_inlineEmojiShortcut, findsOneWidget);
         await tester.enterText(app.composer, 'שלום');
         await tester.pump();
         _expectComposerShortcuts(tester);
         expect(tester.getRect(app.composer), inputRect);
         expect(tester.getRect(tools), toolsRect);
         expect(tester.getRect(action), actionRect);
+        await _focusComposer(tester, app);
         await tester.tap(action);
         await tester.pumpAndSettle();
         app.expectOneTextMessage('שלום');
         expect(app.controller(tester).text, isEmpty);
         expect(find.byIcon(Icons.mic), findsOneWidget);
-        if (tester.widget<TextField>(app.composer).focusNode!.hasFocus) {
-          _expectComposerShortcuts(tester, hasText: false);
-        } else {
-          expect(_stickerShortcut, findsNothing);
-          expect(_inlineEmojiShortcut, findsNothing);
-        }
+        _expectComposerKeyboard(tester, app, visible: false);
+        expect(_stickerShortcut, findsOneWidget);
+        expect(_inlineEmojiShortcut, findsOneWidget);
         expect(tester.getRect(app.composer), inputRect);
         await tester.enterText(app.composer, 'נמחק');
         await tester.pump();
+        _expectComposerKeyboard(tester, app, visible: true);
+        expect(app.controller(tester).text, 'נמחק');
         expect(find.byIcon(Icons.send), findsOneWidget);
         app.controller(tester).clear();
         await tester.pump();
@@ -1021,9 +1279,10 @@ void main() {
         await tester.tap(_imageTile(1));
         await tester.pumpAndSettle();
         final first = inlineEmojiPlainText(app.controller(tester).text);
-        await tester.pump();
+        await _focusComposer(tester, app);
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
+        _expectComposerKeyboard(tester, app, visible: false);
         app.expectOneTextMessage(encodeInlineEmojiText(first));
         expect(_picker, findsOneWidget);
         expect(app.controller(tester).text, isEmpty);
@@ -1035,6 +1294,7 @@ void main() {
         await tester.tap(_done);
         await tester.pumpAndSettle();
         expect(_picker, findsNothing);
+        _expectComposerKeyboard(tester, app, visible: false);
         await app.dispose(tester);
       }, () => app.client);
     });
@@ -1198,19 +1458,11 @@ void main() {
         controller.selection =
             const TextSelection(baseOffset: 5, extentOffset: 2);
         final before = controller.value;
-        await _openShortcut(tester, stickers: true);
         for (final id in [1, 2, 3]) {
-          // Scroll the next row into view without waiting for queued uploads.
-          await tester.scrollUntilVisible(_imageTile(id), 60,
-              scrollable: find
-                  .descendant(of: _picker, matching: find.byType(Scrollable))
-                  .first);
-          await tester.pump();
-          await tester.tap(_imageTile(id));
+          await _openShortcut(tester, stickers: true);
+          await _selectEmoji(tester, id);
         }
-        expect(_picker, findsOneWidget);
-        await _ensureDoneVisible(tester);
-        await tester.tap(_done);
+        expect(_picker, findsNothing);
         for (var i = 0; i < 30; i++) {
           await tester.pump(const Duration(milliseconds: 100));
           await tester.runAsync(
@@ -1322,8 +1574,8 @@ void main() {
         expect(tester.getSize(tile).height,
             greaterThanOrEqualTo(kIsWeb ? 36 : 44));
         if (kIsWeb) {
-          expect(tester.getSize(image).width, closeTo(26.4, 0.001));
-          expect(tester.getSize(image).height, closeTo(26.4, 0.001));
+          expect(tester.getSize(image).width, closeTo(29.04, 0.001));
+          expect(tester.getSize(image).height, closeTo(29.04, 0.001));
         }
         app.expectNothingSent();
         await app.dispose(tester);
@@ -1470,6 +1722,11 @@ void main() {
     testWidgets(
         '$chatKind inserts a small emoji at the caret and sends only on explicit send',
         (tester) async {
+      tester.view.physicalSize = const Size(320, 568);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetViewInsets);
       final app = _ChatHarness(isGroup: isGroup);
       await http.runWithClient(() async {
         await app.mount(tester);
@@ -1478,16 +1735,25 @@ void main() {
         final controller = app.controller(tester);
         expect(controller, isA<InlineEmojiController>());
         controller.selection = const TextSelection.collapsed(offset: 5);
+        tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+        await tester.pumpAndSettle();
         await _openPicker(tester);
         final inlineTile = _imageTile(1);
         final picture =
             find.descendant(of: inlineTile, matching: find.byType(Image));
-        expect(tester.widget<Image>(picture).width, closeTo(26.4, 0.001));
-        expect(tester.widget<Image>(picture).height, closeTo(26.4, 0.001));
+        expect(tester.widget<Image>(picture).width, closeTo(29.04, 0.001));
+        expect(tester.widget<Image>(picture).height, closeTo(29.04, 0.001));
         if (kIsWeb) {
-          expect(tester.getSize(picture).width, closeTo(26.4, 0.001));
-          expect(tester.getSize(picture).height, closeTo(26.4, 0.001));
+          expect(tester.getSize(picture).width, closeTo(29.04, 0.001));
+          expect(tester.getSize(picture).height, closeTo(29.04, 0.001));
         }
+        expect(tester.takeException(), isNull);
+        expect(
+            tester
+                .getRect(find.descendant(
+                    of: _picker, matching: find.byType(CustomScrollView)))
+                .bottom,
+            lessThanOrEqualTo(268));
         final hitSize = tester.getSize(inlineTile);
         expect(hitSize.width, greaterThanOrEqualTo(kIsWeb ? 36 : 44));
         expect(hitSize.height, greaterThanOrEqualTo(kIsWeb ? 36 : 44));
@@ -1505,9 +1771,10 @@ void main() {
         _expectSmallEmoji(tester, app.composer, 1);
         expect(encodeInlineEmojiText(raw), 'שלום [[bt-emoji:001]]abc עולם');
 
-        await tester.pump();
+        await _focusComposer(tester, app);
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
+        _expectComposerKeyboard(tester, app, visible: false);
         app.expectOneTextMessage('שלום [[bt-emoji:001]]abc עולם');
         expect(inlineEmojiPlainText(controller.text), isEmpty);
         _expectSmallEmoji(tester, find.byType(InlineEmojiText), 1);
@@ -1706,9 +1973,10 @@ void main() {
         expect(app.requests.where((request) => request.method == 'PATCH'),
             isEmpty);
 
-        await tester.pump();
+        await _focusComposer(tester, app);
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
+        _expectComposerKeyboard(tester, app, visible: false);
         final patches =
             app.requests.where((request) => request.method == 'PATCH').toList();
         expect(patches, hasLength(1));
@@ -1912,6 +2180,111 @@ void main() {
         }
         expect(app.requests.where((r) => r.url.path.endsWith('/upload')).length,
             uploadsBefore + 1);
+        expect(tester.takeException(), isNull);
+        await app.dispose(tester);
+      }, () => app.client);
+    });
+  }
+
+  for (final isGroup in [false, true]) {
+    testWidgets(
+        'custom emoji growth keeps Unicode unchanged in 320-pixel chat ($isGroup)',
+        (tester) async {
+      tester.view.physicalSize = const Size(320, 568);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final app = _ChatHarness(
+        isGroup: isGroup,
+        splitCatalog: true,
+        extraEmojiItems: _newLibraryEmojiItems,
+        history: [
+          {
+            'id': 'existing-unicode-emoji-message',
+            'sender_id': 'emoji-test-recipient',
+            'body': '😀',
+            'created_at': '2026-10-13T00:00:00Z',
+          },
+          {
+            'id': 'existing-new-library-emoji-message',
+            'sender_id': 'emoji-test-recipient',
+            'body': 'חדש [[bt-emoji:167]] [[bt-emoji:182]] '
+                '[[bt-emoji:183]] [[bt-emoji:198]] '
+                '[[bt-emoji:199]] [[bt-emoji:214]] טוב',
+            'created_at': '2026-10-13T00:01:00Z',
+          },
+        ],
+      );
+      app.liveEmojiCount = 65;
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        await tester.pumpAndSettle();
+        final customMessageSize = isGroup ? 24.5025 : 22.869;
+        for (final id in [167, 182, 183, 198, 199, 214]) {
+          final image = find.byKey(ValueKey('inline-custom-emoji-$id'));
+          expect(image, findsOneWidget);
+          expect(
+              tester.getSize(image).width, closeTo(customMessageSize, 0.001));
+          expect(
+              tester.getSize(image).height, closeTo(customMessageSize, 0.001));
+        }
+        final unicode =
+            find.byKey(const ValueKey('message-unicode-emoji-1f600'));
+        expect(unicode, findsOneWidget);
+        expect(tester.getSize(unicode), const Size(44, 44),
+            reason:
+                'Ordinary Unicode emoji retain their previous display size');
+        await tester.enterText(app.composer, 'שלום 😀 עולם');
+        final controller = app.controller(tester);
+        controller.selection = const TextSelection.collapsed(offset: 5);
+        await _openPicker(tester, count: 113);
+        await _enterSearch(tester, 'קרם');
+        await tester.pumpAndSettle();
+        expect(
+            tester.widget<SliverGrid>(_grid).delegate.estimatedChildCount, 16);
+        for (final entry in [
+          (id: 167, label: 'שמחה — קרם'),
+          (id: 183, label: 'שמחה — ירוק בהיר'),
+          (id: 214, label: 'תסכול — ירוק חזק'),
+        ]) {
+          await _enterSearch(tester, entry.label);
+          await tester.pumpAndSettle();
+          expect(
+              tester.widget<SliverGrid>(_grid).delegate.estimatedChildCount, 1);
+          final tile = find.byKey(ValueKey(
+              'expression-image-https://betshuva.com/betshuva-app/api/expressions/emoji/${entry.id}'));
+          final picture =
+              find.descendant(of: tile, matching: find.byType(Image));
+          expect(tester.widget<Image>(picture).width, closeTo(29.04, 0.001));
+          expect(tester.widget<Image>(picture).height, closeTo(29.04, 0.001));
+          expect(tester.getRect(tile).left, greaterThanOrEqualTo(0));
+          expect(tester.getRect(tile).right, lessThanOrEqualTo(320));
+        }
+        await tester.tap(find.byKey(const ValueKey(
+            'expression-image-https://betshuva.com/betshuva-app/api/expressions/emoji/214')));
+        await tester.pumpAndSettle();
+        const sentText = 'שלום [[bt-emoji:214]]😀 עולם';
+        expect(encodeInlineEmojiText(controller.text), sentText);
+        _expectSmallEmoji(tester, app.composer, 214);
+        app.expectNothingSent();
+        await tester.tap(find.byIcon(Icons.send));
+        await tester.pumpAndSettle();
+        app.expectOneTextMessage(sentText);
+        final sentBody = find.byWidgetPredicate(
+            (widget) => widget is InlineEmojiText && widget.text == sentText);
+        expect(sentBody, findsOneWidget);
+        final sentCustom = find.descendant(
+            of: sentBody,
+            matching: find.byKey(const ValueKey('inline-custom-emoji-214')));
+        expect(tester.getSize(sentCustom).width,
+            closeTo(customMessageSize, 0.001));
+        final sentUnicode = find.descendant(
+            of: sentBody,
+            matching:
+                find.byKey(const ValueKey('message-unicode-emoji-1f600')));
+        expect(tester.getSize(sentUnicode).width,
+            closeTo(isGroup ? 22.275 : 20.79, 0.001),
+            reason: 'Unicode size remains unchanged in mixed messages');
         expect(tester.takeException(), isNull);
         await app.dispose(tester);
       }, () => app.client);

@@ -43,7 +43,7 @@ void main() {
             onRestored: () async {}),
       )));
       expect(find.text('הסירטון נחסם'), findsOneWidget);
-      expect(find.text('video.mp4'), findsOneWidget);
+      expect(find.byWidgetPredicate((w) => w is Tooltip && w.message == 'video.mp4'), findsOneWidget);
       expect(find.textContaining(reason), findsNothing);
       expect(find.textContaining('התמונה'), findsNothing);
     });
@@ -312,11 +312,18 @@ void main() {
           ),
         ));
         await tester.pumpAndSettle();
-        expect(find.text(fixture.expected), findsOneWidget);
-        expect(find.text('צילום-בדיקה-2026.png'), findsOneWidget);
+        final compact =
+            const ['rejected', 'rejected_scan'].contains(fixture.status);
+        if (compact) {
+          expect(find.text('התמונה נחסמה'), findsOneWidget);
+          await tester.tap(find.text('התמונה נחסמה'));
+          await tester.pumpAndSettle();
+        }
+        expect(find.textContaining(fixture.expected), findsOneWidget);
+        expect(find.textContaining('צילום-בדיקה-2026.png'), findsOneWidget);
         expect(find.text('התמונה מוסתרת לפי בחירת הסינון שלך'), findsNothing);
         expect(find.text('להחזיר את התמונה הזו'), findsNothing);
-        expect(find.byType(TextButton), findsNothing);
+        if (!compact) expect(find.byType(TextButton), findsNothing);
         expect(restored, isFalse);
         expect(requests, isEmpty);
         expect(tester.takeException(), isNull);
@@ -369,7 +376,7 @@ void main() {
       expect(requests, hasLength(1));
       await tester.pumpWidget(placeholder('moderation', 'rejected'));
       await tester.pumpAndSettle();
-      expect(find.text('התמונה נחסמה בבדיקת הבטיחות'), findsOneWidget);
+      expect(find.text('התמונה נחסמה'), findsOneWidget);
       expect(find.text('להחזיר את התמונה הזו'), findsNothing);
       expect(requests, hasLength(1));
       expect(tester.takeException(), isNull);
