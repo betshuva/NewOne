@@ -181,15 +181,13 @@ class _RenderReactionOverlay extends RenderBox
 class MessageDetails extends StatelessWidget {
   final Widget child;
   final bool enabled;
-  final bool maintainSize;
-  const MessageDetails({super.key, required this.child, this.enabled = true,
-    this.maintainSize = true});
+  const MessageDetails({super.key, required this.child, this.enabled = true});
   @override
   Widget build(BuildContext context) => Visibility(
         visible: !enabled || MessageHover.detailsVisible(context),
         maintainState: true,
         maintainAnimation: true,
-        maintainSize: maintainSize,
+        maintainSize: true,
         child: child,
       );
 }

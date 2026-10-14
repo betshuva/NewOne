@@ -106,7 +106,7 @@ class _ChatFileNameState extends State<ChatFileName> {
   Widget build(BuildContext context) => _isSticker
       ? const SizedBox.shrink()
       : SizedBox(
-          width: 285,
+          width: 420,
           child: Tooltip(
             message: widget.editable ? '$_name — לחצו לשינוי שם' : _name,
             child: InkWell(
@@ -118,7 +118,9 @@ class _ChatFileNameState extends State<ChatFileName> {
                   Expanded(
                       child: Text(_name,
                           textAlign: TextAlign.right,
-                          softWrap: true,
+                          softWrap: false,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontSize: 12))),
                   if (widget.editable) ...[
                     const SizedBox(width: 6),

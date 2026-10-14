@@ -2348,7 +2348,7 @@ const MODERATION_CACHE_VERSION = `2026-10-13-animated-frame-policy-23:${moderati
 const VIDEO_SCAN_VERSION = `${MODERATION_CACHE_VERSION}:video20-90min-v1`;
 // Animation sampling changes only animation cache entries, preserving durable
 // video scans and still-image results under their existing policy versions.
-const ANIMATED_SCAN_VERSION = `${MODERATION_CACHE_VERSION}:animated20-time-v1`;
+const ANIMATED_SCAN_VERSION = `${MODERATION_CACHE_VERSION}:gif3-webp20-time-v2`;
 const unicodeEmojiModerator = createUnicodeEmojiModerator({
   extractEmoji: extractKeyboardEmoji,
   loadArtwork: createKeyboardEmojiArtworkLoader(),

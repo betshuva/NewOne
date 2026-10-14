@@ -16,7 +16,7 @@ const routeStart = source.indexOf("app.post('/api/upload',");
 const routeEnd = source.indexOf('// ── Groups: list mine', routeStart);
 assert.ok(routeStart > 0 && routeEnd > routeStart);
 const VERSION = 'test-current';
-const ANIMATED_VERSION = `${VERSION}:animated20-time-v1`;
+const ANIMATED_VERSION = `${VERSION}:gif3-webp20-time-v2`;
 const realIsPotentiallyAnimatedImage = vm.runInNewContext(source.slice(
   source.indexOf('function isPotentiallyAnimatedImage('),
   source.indexOf('async function scanStaticImage(')) + ';isPotentiallyAnimatedImage', {

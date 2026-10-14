@@ -27,7 +27,7 @@ function scanner(overrides = {}) {
     createImageReviewState: () => ({}),
     isPotentiallyAnimatedImage: buffer => imageAnimationPolicy.potentialAnimationFormat(buffer) !== null,
     imageAnimationPolicy, imageClassificationOutcome, sharp,
-    ANIMATED_SCAN_VERSION: 'fixture-animated20',
+    ANIMATED_SCAN_VERSION: 'fixture-gif3-webp20',
     scanStaticImage: async () => ({ blocked: false, classification: objectClassification }),
     ...overrides,
   });
@@ -56,6 +56,24 @@ async function indexedAnimation(format, delays) {
   } })[format]({ loop: 0, delay: delays, lossless: true }).toBuffer();
   return { bytes, pixels };
 }
+
+test('GIF scans beginning, temporal midpoint and end only', () => {
+  assert.deepEqual(imageAnimationPolicy.sampleAnimationFrames({
+    format: 'gif', pages: 37, delay: Array(37).fill(100),
+  }), [
+    { frameIndex: 0, timeSeconds: 0 },
+    { frameIndex: 18, timeSeconds: 1.8 },
+    { frameIndex: 36, timeSeconds: 3.6 },
+  ]);
+  for (const pages of [1, 2, 3]) {
+    assert.equal(imageAnimationPolicy.sampleAnimationFrames({ format: 'gif', pages }).length, pages);
+  }
+  const delay = Array(37).fill(100);
+  delay[9] = 10000;
+  assert.deepEqual(imageAnimationPolicy.sampleAnimationFrames({
+    format: 'gif', pages: 37, delay,
+  }).map(frame => frame.frameIndex), [0, 9, 36]);
+});
 
 test('animation sampling checks every short animation frame with its original timestamp', () => {
   for (const frameCount of [1, 2, 12, 13, 20]) {
@@ -222,19 +240,19 @@ for (const format of ['gif', 'webp']) {
     }
   });
 
-  test(`${format} scans all twenty frames and samples longer animations without a frame-count rejection`, async () => {
+  test(`${format} respects its sample limit for twenty-frame and longer animations`, async () => {
     let calls = 0;
     const scan = scanner({ scanStaticImage: async () => {
       calls++; return { blocked: false, classification: objectClassification };
     } });
     const twenty = await scan(await animation(format, 20));
-    assert.equal(twenty.blocked, false); assert.equal(twenty.framesScanned, 20);
-    assert.equal(twenty.sampledFrames, 20); assert.equal(calls, 20);
+    assert.equal(twenty.blocked, false); assert.equal(twenty.framesScanned, format === 'gif' ? 3 : 20);
+    assert.equal(twenty.sampledFrames, format === 'gif' ? 3 : 20); assert.equal(calls, format === 'gif' ? 3 : 20);
     calls = 0;
     const longer = await scan(await animation(format, 37));
     assert.equal(longer.blocked, false); assert.equal(longer.blockedBy, null);
-    assert.equal(longer.frameCount, 37); assert.equal(longer.framesScanned, 20);
-    assert.equal(longer.sampledFrames, 20); assert.equal(calls, 20);
+    assert.equal(longer.frameCount, 37); assert.equal(longer.framesScanned, format === 'gif' ? 3 : 20);
+    assert.equal(longer.sampledFrames, format === 'gif' ? 3 : 20); assert.equal(calls, format === 'gif' ? 3 : 20);
   });
 
   test(`${format} scans exactly the selected decoded frames and clears first-frame SafeSearch reuse`, async () => {
@@ -263,7 +281,7 @@ for (const format of ['gif', 'webp']) {
       assert.equal(new Set(states).size, 1);
       assert.deepEqual(seen, expected.map(({ frameIndex }) => Array.from(
         pixels.subarray(frameIndex * 4, frameIndex * 4 + 3))));
-      assert.equal(result.moderationVersion, 'fixture-animated20');
+      assert.equal(result.moderationVersion, 'fixture-gif3-webp20');
       assert.deepEqual(JSON.parse(JSON.stringify(result.frameSamples)), expected);
       assert.deepEqual(Array.from(result.frameResults, ({ frameIndex, timeSeconds }) =>
         ({ frameIndex, timeSeconds })), expected);
@@ -285,7 +303,7 @@ for (const format of ['gif', 'webp']) {
     } });
     const result = await scan(bytes);
     assert.equal(result.blocked, true);
-    assert.equal(result.framesScanned, 20); assert.equal(calls, 20);
+    assert.equal(result.framesScanned, format === 'gif' ? 3 : 20); assert.equal(calls, format === 'gif' ? 3 : 20);
     assert.match(result.reason, /37/);
     assert.equal(result.frameResults.at(-1).frameIndex, 36);
     assert.deepEqual(result.classification.detectedCategories, ['nonHumanImages', 'women']);
@@ -353,7 +371,7 @@ test('a failed later-frame decode never returns the preceding frame approval', a
 });
 
 test('a failed sampled source-frame decode preserves earlier samples without approving the animation', async () => {
-  const { bytes } = await indexedAnimation('gif', Array(37).fill(100));
+  const { bytes } = await indexedAnimation('webp', Array(37).fill(100));
   let calls = 0;
   const scan = scanner({ sharp: (input, options) => options?.page === 7
     ? { png() { return this; }, toBuffer: async () => { throw new Error('fixture sampled decode failure'); } }

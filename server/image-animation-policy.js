@@ -2,9 +2,11 @@
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const ANIMATION_SAMPLE_LIMIT = 20;
+const GIF_SAMPLE_LIMIT = 3;
 const DEFAULT_FRAME_DELAY_MS = 100;
 
 function sampleAnimationFrames(metadata) {
+  const sampleLimit = metadata?.format === 'gif' ? GIF_SAMPLE_LIMIT : ANIMATION_SAMPLE_LIMIT;
   const frameCount = Number(metadata?.pages ?? 1);
   if (!Number.isSafeInteger(frameCount) || frameCount < 1)
     throw new RangeError('Invalid animation frame count');
@@ -23,14 +25,14 @@ function sampleAnimationFrames(metadata) {
   const startTime = frameIndex => frameIndex < delays.length
     ? (frameIndex === 0 ? 0 : ends[frameIndex - 1])
     : knownDuration + (frameIndex - delays.length) * DEFAULT_FRAME_DELAY_MS;
-  if (frameCount <= ANIMATION_SAMPLE_LIMIT) {
+  if (frameCount <= sampleLimit) {
     return Array.from({ length: frameCount }, (_, frameIndex) =>
       ({ frameIndex, timeSeconds: startTime(frameIndex) / 1000 }));
   }
 
   const selected = new Set([0]);
-  for (let sample = 1; sample < ANIMATION_SAMPLE_LIMIT - 1; sample++) {
-    const time = totalDuration * sample / (ANIMATION_SAMPLE_LIMIT - 1);
+  for (let sample = 1; sample < sampleLimit - 1; sample++) {
+    const time = totalDuration * sample / (sampleLimit - 1);
     let low = 0, high = ends.length;
     // At a presentation boundary choose the newly displayed frame.
     while (low < high) {
@@ -98,4 +100,4 @@ function mergedFrameClassification(results) {
 }
 
 module.exports = { potentialAnimationFormat, mergedFrameClassification,
-  sampleAnimationFrames, ANIMATION_SAMPLE_LIMIT };
+  sampleAnimationFrames, ANIMATION_SAMPLE_LIMIT, GIF_SAMPLE_LIMIT };

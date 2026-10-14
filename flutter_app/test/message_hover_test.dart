@@ -2,6 +2,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:betshuva/message_hover.dart';
+import 'package:betshuva/chat_history_list.dart';
 
 void main() {
   testWidgets('reactions sit at the right bottom without changing object width',
@@ -140,16 +141,19 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('collapsed delivery details do not reserve bubble height',
-      (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: Scaffold(body:
-      Align(alignment: Alignment.topRight, child: MessageHover(child:
-        Column(mainAxisSize: MainAxisSize.min, children: [
-          SizedBox(width: 200, height: 24, child: Text('message')),
-          MessageDetails(maintainSize: false,
-            child: SizedBox(width: 200, height: 70, child: Text('delivery'))),
-        ]))))));
-    expect(tester.getSize(find.byType(MessageHover)).height, 24);
+  testWidgets('delivery details reserve height across hover', (tester) async {
+    await tester.pumpWidget(const MaterialApp(
+        home: Scaffold(
+            body: Align(
+                alignment: Alignment.topRight,
+                child: MessageHover(
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  SizedBox(width: 200, height: 24, child: Text('message')),
+                  MessageDetails(
+                      child: SizedBox(
+                          width: 200, height: 70, child: Text('delivery'))),
+                ]))))));
+    expect(tester.getSize(find.byType(MessageHover)).height, 94);
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
     await mouse.addPointer(location: const Offset(1, 500));
     await mouse.moveTo(tester.getCenter(find.text('message')));
@@ -157,8 +161,63 @@ void main() {
     expect(tester.getSize(find.byType(MessageHover)).height, 94);
     await mouse.moveTo(const Offset(1, 500));
     await tester.pump();
-    expect(tester.getSize(find.byType(MessageHover)).height, 24);
+    expect(tester.getSize(find.byType(MessageHover)).height, 94);
     await mouse.removePointer();
+  });
+
+  testWidgets(
+      'delivery hover preserves bottom anchored media and its neighbours',
+      (tester) async {
+    final controller = ChatHistoryController();
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+            body: ChatHistoryList(
+      controller: controller,
+      itemCount: 2,
+      anchorIndex: 2,
+      itemBuilder: (_, index) => Align(
+          alignment: Alignment.centerRight,
+          child: index == 0
+              ? const SizedBox(
+                  key: ValueKey('previous'), width: 200, height: 100)
+              : const MessageHover(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  SizedBox(key: ValueKey('media'), width: 200, height: 150),
+                  MessageDetails(
+                      child: SizedBox(
+                          width: 200, height: 70, child: Text('delivery'))),
+                ]))),
+    ))));
+    await tester.pumpAndSettle();
+    final media = find.byKey(const ValueKey('media'));
+    final previous = find.byKey(const ValueKey('previous'));
+    final mediaRect = tester.getRect(media);
+    final previousRect = tester.getRect(previous);
+    final offset = controller.offset;
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: const Offset(1, 1));
+    for (var pass = 0; pass < 3; pass++) {
+      for (final point in [
+        mediaRect.topCenter + const Offset(0, 1),
+        mediaRect.center,
+        mediaRect.bottomCenter - const Offset(0, 1),
+        const Offset(1, 1)
+      ]) {
+        await mouse.moveTo(point);
+        for (var frame = 0; frame < 4; frame++) {
+          await tester.pump(const Duration(milliseconds: 16));
+          expect(tester.getRect(media), mediaRect);
+          expect(tester.getRect(previous), previousRect);
+          expect(controller.offset, offset);
+        }
+        expect(tester.widget<Visibility>(find.byType(Visibility)).visible,
+            mediaRect.contains(point));
+      }
+    }
+    await mouse.removePointer();
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('hover never resizes an object or moves the next message',

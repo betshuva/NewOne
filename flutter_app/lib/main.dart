@@ -2084,7 +2084,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.77';
+const kVersion = '1.3.78';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -31144,7 +31144,7 @@ class _GroupDeliverySummary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) =>
-      MessageDetails(maintainSize: false, child: _buildDetails(context));
+      MessageDetails(child: _buildDetails(context));
 
   Widget _buildDetails(BuildContext context) {
     final deliveredCount = summary['deliveredCount'] as int? ?? 0;
@@ -45836,7 +45836,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text('הגדרות',
-                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF263747))),
             if (name.isNotEmpty)
               Text(name, style: const TextStyle(fontSize: 11, color: kSubtext)),
           ],
