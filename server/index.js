@@ -12554,6 +12554,8 @@ async function adminAuth(req, res, next) {
   }
 }
 
+require('./emoji-admin').registerEmojiAdmin(app, { root: BUILTIN_EXPRESSION_ROOT, adminAuth });
+
 const DEFAULT_GOOGLE_PLAY_DESCRIPTION = {
   appName: 'בתשובה',
   shortDescription: 'אפליקציה להעברת מסרים שבה כל התמונות והסרטונים עוברים סינון תוכן',
